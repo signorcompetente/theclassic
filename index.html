@@ -1,0 +1,1710 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Classic // Sinergie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background:#0B0D10; }
+  .mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+  h1,h2,h3,.font-display { font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 800; letter-spacing: -0.02em; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2A2F37; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const RUOLI = ["P", "D", "C", "A"];
+const ROSTER_SLOTS = { P: 3, D: 8, C: 8, A: 6 };
+const FORZA_PESO = { facile: 5, buono: 10, ottimo: 18 };
+const RUOLO_LABEL = { P: "Portiere", D: "Difensore", C: "Centrocampista", A: "Attaccante" };
+const RUOLO_ACCENT = { P: "#94A3B8", D: "#34D399", C: "#38BDF8", A: "#FBBF24" };
+const REPARTO_FORZA = { A: "attacco", C: "centrocampo", D: "difesa", P: "difesa" };
+const CASA_BONUS = 0.6;
+
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+function normalizzaTesto(s) {
+  return (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
+function estraiGiornataHeader(testo) {
+  let m = testo.match(/(\d+)\s*[°ª^]?\s*giornata/i);
+  if (m) return parseInt(m[1]);
+  m = testo.match(/giornata\s*[°ª^]?\s*(\d+)/i);
+  if (m) return parseInt(m[1]);
+  return null;
+}
+
+function normalizzaSquadra(s) {
+  if (!s) return "";
+  let t = s.toString().trim().replace(/\s+/g, " ");
+  t = t.replace(/^(AC|AS|US|SS|SSC|ACF|UC|UD|FC|AFC|CFC)\s+/i, "");
+  return t;
+}
+
+function normalizzaRuoloClassic(r) {
+  if (!r) return "";
+  r = r.toString().toUpperCase().trim();
+  if (r.startsWith("P")) return "P";
+  if (r.startsWith("D")) return "D";
+  if (r.startsWith("C") || r.startsWith("M")) return "C";
+  if (r.startsWith("A") || r.startsWith("W") || r.startsWith("T")) return "A";
+  return r[0] || "";
+}
+
+function findCol(headerRow, candidates) {
+  for (let i = 0; i < headerRow.length; i++) {
+    const h = (headerRow[i] || "").toString().toLowerCase().trim();
+    if (candidates.some(c => h === c || h.includes(c))) return i;
+  }
+  return -1;
+}
+
+// ---------- componenti UI riutilizzabili (tema dark/terminal) ----------
+function Panel({ children, className = "" }) {
+  return <div className={`bg-[#14181D] border border-[#262B33] rounded-lg ${className}`}>{children}</div>;
+}
+function Pill({ children, color = "#D4FF3F", className = "" }) {
+  return <span className={`inline-block text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded ${className}`}
+    style={{ color, backgroundColor: color + "22", border: `1px solid ${color}55` }}>{children}</span>;
+}
+function BtnGhost({ children, onClick, active }) {
+  return (
+    <button onClick={onClick}
+      className={`px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wide border transition ${active ? "bg-[#D4FF3F] text-black border-[#D4FF3F]" : "bg-transparent text-[#E8ECEF] border-[#2A2F37] hover:border-[#D4FF3F] hover:text-[#D4FF3F]"}`}>
+      {children}
+    </button>
+  );
+}
+function ModalShell({ title, onClose, children, wide }) {
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className={`bg-[#14181D] border border-[#2A2F37] rounded-xl shadow-2xl w-full ${wide ? "max-w-3xl" : "max-w-lg"} p-6 max-h-[90vh] overflow-y-auto`}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-display font-extrabold text-[#E8ECEF] uppercase tracking-wide">{title}</h2>
+          <button onClick={onClose} className="text-[#8B95A1] hover:text-[#E8ECEF] text-2xl leading-none">✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [database, setDatabase] = useState({});
+  const [acquisti, setAcquisti] = useState([]);
+  const [budgetTotale, setBudgetTotale] = useState(500);
+  const [numeroPartecipanti, setNumeroPartecipanti] = useState(8);
+  const [budgetMaxPortieri, setBudgetMaxPortieri] = useState(55);
+  const [pesoPortiereDifesa, setPesoPortiereDifesa] = useState(100);
+  const [gruppoDimReparto, setGruppoDimReparto] = useState({ D: 4, C: 3, A: 3 });
+  const [prezziPagati, setPrezziPagati] = useState({});
+
+  const [inputNome, setInputNome] = useState("");
+  const [autocomplete, setAutocomplete] = useState([]);
+  const [autocompleteIndex, setAutocompleteIndex] = useState(0);
+  const [giocatoreSelezionato, setGiocatoreSelezionato] = useState(null); // nome del giocatore in attesa di assegnazione
+  const [prezzoSelezione, setPrezzoSelezione] = useState("");
+
+  const [importStatus, setImportStatus] = useState("");
+  const [listoneTesto, setListoneTesto] = useState("");
+  const [showRosaPopup, setShowRosaPopup] = useState(false);
+
+  const [forzaSquadre, setForzaSquadre] = useState({});
+  const [calendario, setCalendario] = useState([]);
+  const [calendarioTesto, setCalendarioTesto] = useState("");
+  const [calendarioStatus, setCalendarioStatus] = useState("");
+  const [giornataAttuale, setGiornataAttuale] = useState(1);
+  const [finestraGiornate, setFinestraGiornate] = useState(5);
+
+  const [showPreparaModal, setShowPreparaModal] = useState(false);
+  const [preparaTab, setPreparaTab] = useState("listone");
+  const [confermaPending, setConfermaPending] = useState(null); // { messaggio, azione }
+  const chiediConferma = (messaggio, azione) => setConfermaPending({ messaggio, azione });
+  const [grigliaReparto, setGrigliaReparto] = useState("P");
+  const [grigliaSquadreSelezionate, setGrigliaSquadreSelezionate] = useState([]);
+  const [grigliaGiornataMin, setGrigliaGiornataMin] = useState(1);
+  const [grigliaGiornataMax, setGrigliaGiornataMax] = useState(38);
+
+  const [altriAcquisti, setAltriAcquisti] = useState([]);
+  const [squadreAvversarie, setSquadreAvversarie] = useState([]);
+  const [showMercatoModal, setShowMercatoModal] = useState(false);
+  const [mercatoNomeInput, setMercatoNomeInput] = useState("");
+  const [mercatoPrezzoInput, setMercatoPrezzoInput] = useState("");
+  const [mercatoSquadraInput, setMercatoSquadraInput] = useState("");
+  const [mercatoAutocomplete, setMercatoAutocomplete] = useState([]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("classic-sinergie-v1");
+    if (saved) {
+      try {
+        const d = JSON.parse(saved);
+        setDatabase(d.database || {});
+        setAcquisti(d.acquisti || []);
+        setBudgetTotale(d.budgetTotale || 500);
+        setNumeroPartecipanti(d.numeroPartecipanti || 8);
+        setBudgetMaxPortieri(d.budgetMaxPortieri || 55);
+        setPesoPortiereDifesa(d.pesoPortiereDifesa !== undefined ? d.pesoPortiereDifesa : 100);
+        if (d.gruppoDimReparto) setGruppoDimReparto(d.gruppoDimReparto);
+        setPrezziPagati(d.prezziPagati || {});
+        setForzaSquadre(d.forzaSquadre || {});
+        setCalendario(d.calendario || []);
+        setGiornataAttuale(d.giornataAttuale || 1);
+        setFinestraGiornate(d.finestraGiornate || 5);
+        setAltriAcquisti(d.altriAcquisti || []);
+        if (d.squadreAvversarie && d.squadreAvversarie.length) setSquadreAvversarie(d.squadreAvversarie);
+      } catch (e) {}
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("classic-sinergie-v1", JSON.stringify({
+      database, acquisti, budgetTotale, numeroPartecipanti, prezziPagati,
+      forzaSquadre, calendario, giornataAttuale, finestraGiornate, altriAcquisti, squadreAvversarie, budgetMaxPortieri, gruppoDimReparto, pesoPortiereDifesa
+    }));
+  }, [database, acquisti, budgetTotale, numeroPartecipanti, prezziPagati,
+      forzaSquadre, calendario, giornataAttuale, finestraGiornate, altriAcquisti, squadreAvversarie, budgetMaxPortieri, gruppoDimReparto, pesoPortiereDifesa]);
+
+  const squadreDisponibili = useMemo(() => {
+    const set = new Set();
+    Object.values(database).forEach(e => { if (e.squadra) set.add(e.squadra); });
+    let squadre = [...set];
+    if (calendario.length > 0) {
+      const squadreCalendario = new Set();
+      calendario.forEach(m => { squadreCalendario.add(m.casa); squadreCalendario.add(m.trasferta); });
+      squadre = squadre.filter(sq => squadreCalendario.has(sq));
+    }
+    return squadre.sort();
+  }, [database, calendario]);
+
+  const diagnosticoSquadre = useMemo(() => {
+    const conteggio = {};
+    Object.values(database).forEach(e => {
+      if (!e.squadra) return;
+      if (!conteggio[e.squadra]) conteggio[e.squadra] = { P: 0, D: 0, C: 0, A: 0 };
+      if (conteggio[e.squadra][e.ruolo] !== undefined) conteggio[e.squadra][e.ruolo]++;
+    });
+    return conteggio;
+  }, [database]);
+
+  useEffect(() => {
+    if (inputNome.length >= 2 && Object.keys(database).length > 0) {
+      const matches = Object.keys(database)
+        .filter(n => n.toLowerCase().includes(inputNome.toLowerCase()) && !acquisti.find(a => a.nome === n))
+        .slice(0, 6);
+      setAutocomplete(matches);
+      setAutocompleteIndex(0);
+    } else {
+      setAutocomplete([]);
+    }
+  }, [inputNome, database, acquisti]);
+
+  useEffect(() => {
+    if (squadreDisponibili.length === 0) return;
+    setForzaSquadre(prev => {
+      let cambiato = false;
+      const next = { ...prev };
+      squadreDisponibili.forEach(sq => {
+        if (!next[sq]) { next[sq] = { attacco: 5, centrocampo: 5, difesa: 5 }; cambiato = true; }
+      });
+      return cambiato ? next : prev;
+    });
+  }, [squadreDisponibili]);
+
+  useEffect(() => {
+    if (mercatoNomeInput.length >= 2 && Object.keys(database).length > 0) {
+      const esclusi = new Set([...acquisti.map(a => a.nome), ...altriAcquisti.map(a => a.nome)]);
+      setMercatoAutocomplete(
+        Object.keys(database).filter(n => n.toLowerCase().includes(mercatoNomeInput.toLowerCase()) && !esclusi.has(n)).slice(0, 6)
+      );
+    } else {
+      setMercatoAutocomplete([]);
+    }
+  }, [mercatoNomeInput, database, acquisti, altriAcquisti]);
+
+  // elenco fisso squadre avversarie: si adegua al numero di partecipanti (numeroPartecipanti - 1 avversari)
+  useEffect(() => {
+    const nAvversari = Math.max(0, numeroPartecipanti - 1);
+    setSquadreAvversarie(prev => {
+      if (prev.length === nAvversari) return prev;
+      const next = prev.slice(0, nAvversari);
+      while (next.length < nAvversari) next.push(`Avversario ${next.length + 1}`);
+      return next;
+    });
+  }, [numeroPartecipanti]);
+
+  const rinominaSquadraAvversaria = (idx, nome) => {
+    const next = [...squadreAvversarie];
+    next[idx] = nome;
+    setSquadreAvversarie(next);
+  };
+
+  const riepilogoAvversari = useMemo(() => {
+    const gruppi = {};
+    squadreAvversarie.forEach(nome => {
+      gruppi[nome] = { speso: 0, giocatori: [], perRuolo: { P: 0, D: 0, C: 0, A: 0 } };
+    });
+    altriAcquisti.forEach(a => {
+      const chiave = a.squadraAvv || "Senza squadra indicata";
+      if (!gruppi[chiave]) gruppi[chiave] = { speso: 0, giocatori: [], perRuolo: { P: 0, D: 0, C: 0, A: 0 } };
+      gruppi[chiave].speso += a.prezzo || 0;
+      gruppi[chiave].giocatori.push(a);
+      const e = database[a.nome];
+      if (e && gruppi[chiave].perRuolo[e.ruolo] !== undefined) gruppi[chiave].perRuolo[e.ruolo]++;
+    });
+    return gruppi;
+  }, [altriAcquisti, database, squadreAvversarie]);
+
+  const selezionaGiocatore = (nome) => {
+    const entry = database[nome];
+    if (!entry) return;
+    setGiocatoreSelezionato(nome);
+    setPrezzoSelezione("0");
+    setInputNome("");
+    setAutocomplete([]);
+  };
+
+  const annullaSelezione = () => {
+    setGiocatoreSelezionato(null);
+    setPrezzoSelezione("");
+  };
+
+  const assegnaAMe = () => {
+    const nome = giocatoreSelezionato;
+    const entry = database[nome];
+    const prezzo = parseInt(prezzoSelezione);
+    if (!entry || !prezzo || prezzo <= 0) return;
+    setAcquisti([...acquisti, { nome, ruolo: entry.ruolo, squadra: entry.squadra }]);
+    setPrezziPagati({ ...prezziPagati, [nome]: prezzo });
+    annullaSelezione();
+  };
+
+  const assegnaAdAvversario = (squadraAvv) => {
+    const nome = giocatoreSelezionato;
+    const prezzo = parseInt(prezzoSelezione);
+    if (!nome || !prezzo || prezzo <= 0) return;
+    setAltriAcquisti([...altriAcquisti, { id: uid(), nome, prezzo, squadraAvv }]);
+    annullaSelezione();
+  };
+
+  const rimuoviAcquisto = (nome) => {
+    setAcquisti(acquisti.filter(a => a.nome !== nome));
+    const np = { ...prezziPagati };
+    delete np[nome];
+    setPrezziPagati(np);
+  };
+
+  const setForzaCampo = (squadra, campo, val) => {
+    setForzaSquadre({ ...forzaSquadre, [squadra]: { ...forzaSquadre[squadra], [campo]: Math.min(10, Math.max(1, parseInt(val) || 1)) } });
+  };
+
+  const stimaForzaDaFMV = () => {
+    const perSquadraRuolo = {};
+    Object.values(database).forEach(e => {
+      if (!e.squadra) return;
+      perSquadraRuolo[e.squadra] = perSquadraRuolo[e.squadra] || {};
+      perSquadraRuolo[e.squadra][e.ruolo] = perSquadraRuolo[e.squadra][e.ruolo] || [];
+      perSquadraRuolo[e.squadra][e.ruolo].push(e.fmv);
+    });
+    const PESI_RANK = {
+      4: [0.35, 0.30, 0.20, 0.15],
+      5: [0.30, 0.25, 0.20, 0.15, 0.10]
+    };
+    const pesataTop = (arr, n) => {
+      if (!arr || arr.length === 0) return 0;
+      const top = [...arr].sort((a, b) => b - a).slice(0, Math.min(n, arr.length));
+      const pesiBase = PESI_RANK[n] || Array(n).fill(1 / n);
+      const pesi = pesiBase.slice(0, top.length);
+      const sommaPesi = pesi.reduce((s, w) => s + w, 0);
+      return top.reduce((s, v, i) => s + v * pesi[i], 0) / sommaPesi;
+    };
+    const grezzo = {};
+    squadreDisponibili.forEach(sq => {
+      const rm = perSquadraRuolo[sq] || {};
+      grezzo[sq] = { attacco: pesataTop(rm.A, 4), centrocampo: pesataTop(rm.C, 5), difesa: pesataTop(rm.D, 5) };
+    });
+    const nuovo = {};
+    ["attacco", "centrocampo", "difesa"].forEach(campo => {
+      const valori = squadreDisponibili.map(sq => grezzo[sq][campo]).filter(v => v > 0);
+      if (valori.length === 0) return;
+      const min = Math.min(...valori), max = Math.max(...valori);
+      squadreDisponibili.forEach(sq => {
+        nuovo[sq] = nuovo[sq] || { attacco: 5, centrocampo: 5, difesa: 5 };
+        const v = grezzo[sq][campo];
+        nuovo[sq][campo] = (max > min && v > 0) ? Math.round(1 + ((v - min) / (max - min)) * 9) : 5;
+      });
+    });
+    setForzaSquadre(nuovo);
+  };
+
+  const trovaSquadra = (token) => {
+    const t = normalizzaTesto(token);
+    let match = squadreDisponibili.find(sq => normalizzaTesto(sq) === t);
+    if (match) return match;
+    match = squadreDisponibili.find(sq => normalizzaTesto(sq).includes(t) || t.includes(normalizzaTesto(sq)));
+    return match || null;
+  };
+
+  const copertura = useMemo(() => {
+    if (calendario.length === 0) return null;
+    const giornate = calendario.map(m => m.giornata);
+    const min = Math.min(...giornate), max = Math.max(...giornate);
+    const perSquadra = {};
+    squadreDisponibili.forEach(sq => { perSquadra[sq] = 0; });
+    calendario.forEach(m => {
+      if (perSquadra[m.casa] !== undefined) perSquadra[m.casa]++;
+      if (perSquadra[m.trasferta] !== undefined) perSquadra[m.trasferta]++;
+    });
+    const incomplete = Object.entries(perSquadra).filter(([sq, n]) => n > 0 && n < (max - min + 1));
+    return { totale: calendario.length, min, max, perSquadra, incomplete };
+  }, [calendario, squadreDisponibili]);
+
+  const importaCalendario = () => {
+    if (squadreDisponibili.length === 0) {
+      setCalendarioStatus("❌ Carica prima il listone (serve per riconoscere i nomi delle squadre)");
+      return;
+    }
+    const righe = calendarioTesto.split("\n").map(r => r.trim()).filter(Boolean);
+    const nuovi = [];
+    let scartate = 0;
+    let giornataCorrente = null;
+
+    righe.forEach(riga => {
+      // formato CSV: "1^ GIORNATA - 24 AGOSTO 2025,24/08/2025,Atalanta,Pisa,Atalanta vs. Pisa"
+      if (riga.includes(",")) {
+        const campi = riga.split(",").map(c => c.trim()).filter(Boolean);
+        if (campi.length >= 4) {
+          const giornataCsv = estraiGiornataHeader(campi[0]);
+          if (giornataCsv !== null) {
+            const casa = trovaSquadra(campi[2]);
+            const trasferta = trovaSquadra(campi[3]);
+            if (casa && trasferta) {
+              giornataCorrente = giornataCsv;
+              nuovi.push({ giornata: giornataCsv, casa, trasferta });
+              return;
+            }
+          }
+        }
+      }
+      // riga di intestazione tipo "1^ GIORNATA – 24 AGOSTO 2025" o "Giornata 1 – 23/08/2026"
+      const giornataHeader = estraiGiornataHeader(riga);
+      if (giornataHeader !== null) {
+        giornataCorrente = giornataHeader;
+        return;
+      }
+      // riga partita: "Casa-Trasferta" (nuovo formato) oppure "N - Casa - Trasferta" (formato inline)
+      const senzaNumeroIniziale = riga.replace(/^\s*\d+\s*/, "");
+      const pezzi = senzaNumeroIniziale.split(/[-–—,;\t]+/).map(p => p.trim()).filter(Boolean);
+      if (pezzi.length === 2) {
+        const casa = trovaSquadra(pezzi[0]);
+        const trasferta = trovaSquadra(pezzi[1]);
+        if (casa && trasferta) {
+          const numMatch = riga.match(/^\s*(\d+)/);
+          const giornata = numMatch ? parseInt(numMatch[1]) : giornataCorrente;
+          if (giornata) { nuovi.push({ giornata, casa, trasferta }); return; }
+        }
+      }
+      scartate++;
+    });
+
+    if (nuovi.length === 0) {
+      setCalendarioStatus("❌ Nessuna partita riconosciuta — controlla il formato");
+      return;
+    }
+    setCalendario([...calendario, ...nuovi]);
+    setCalendarioStatus(`✅ ${nuovi.length} partite importate${scartate > 0 ? `, ${scartate} righe scartate` : ""}`);
+    setCalendarioTesto("");
+  };
+
+  const aggiungiAltroAcquisto = () => {
+    if (!mercatoNomeInput.trim() || !mercatoPrezzoInput) return;
+    setAltriAcquisti([...altriAcquisti, { id: uid(), nome: mercatoNomeInput.trim(), prezzo: parseInt(mercatoPrezzoInput) || 0, squadraAvv: mercatoSquadraInput.trim() }]);
+    setMercatoNomeInput("");
+    setMercatoPrezzoInput("");
+    setMercatoSquadraInput("");
+  };
+  const rimuoviAltroAcquisto = (id) => setAltriAcquisti(altriAcquisti.filter(a => a.id !== id));
+
+  const handleFile = (file) => {
+    setImportStatus("⏳ Lettura file...");
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(evt.target.result, { type: "binary" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        if (rows.length < 2) { setImportStatus("❌ File vuoto o non valido"); return; }
+        const header = rows[0];
+        const idxNome = findCol(header, ["nome"]);
+        const idxSquadra = findCol(header, ["squadra", "sq."]);
+        const idxRuolo = findCol(header, ["r", "ruolo"]);
+        const idxFmv = findCol(header, ["fvm", "fmv", "qt.a", "quotazione"]);
+
+        if (idxNome === -1 || idxRuolo === -1) {
+          setImportStatus("❌ Non trovo le colonne Nome/Ruolo — controlla l'intestazione del file");
+          return;
+        }
+        const newDb = {};
+        let count = 0;
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          const nome = (row[idxNome] || "").toString().trim();
+          const ruoloRaw = (row[idxRuolo] || "").toString().trim();
+          const squadra = idxSquadra !== -1 ? normalizzaSquadra(row[idxSquadra]) : "";
+          const fmvRaw = idxFmv !== -1 ? row[idxFmv] : "";
+          const ruolo = normalizzaRuoloClassic(ruoloRaw);
+          const fmv = parseFloat(fmvRaw) || 0;
+          if (!nome || !ruolo) continue;
+          newDb[nome] = { ruolo, squadra, fmv };
+          count++;
+        }
+        if (count === 0) { setImportStatus("❌ Nessun giocatore trovato nel file"); return; }
+        setDatabase(newDb);
+        setImportStatus(`✅ ${count} giocatori caricati (${[...new Set(Object.values(newDb).map(d=>d.squadra))].filter(Boolean).length} squadre riconosciute)`);
+      } catch (e) {
+        setImportStatus("❌ Errore lettura file: " + e.message);
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  // ---- import listone via copia-incolla (TSV) ----
+  const handlePasteListone = () => {
+    setImportStatus("⏳ Lettura testo...");
+    const righe = listoneTesto.split("\n").map(r => r.replace(/\r$/, "")).filter(r => r.trim().length > 0);
+    if (righe.length < 2) { setImportStatus("❌ Incolla almeno intestazione + una riga"); return; }
+    const splitRiga = (r) => r.includes("\t") ? r.split("\t") : r.split(/ {2,}/);
+    const header = splitRiga(righe[0]);
+    const idxRuolo = findCol(header, ["r", "ruolo"]);
+    const idxNome = findCol(header, ["nome"]);
+    const idxSquadra = findCol(header, ["squadra", "sq."]);
+    const idxFmv = findCol(header, ["fvm", "fmv", "qt.a", "quotazione"]);
+    if (idxNome === -1 || idxRuolo === -1) {
+      setImportStatus("❌ Non trovo le colonne Nome/Ruolo nell'intestazione incollata");
+      return;
+    }
+    const newDb = { ...database };
+    let count = 0;
+    for (let i = 1; i < righe.length; i++) {
+      const cols = splitRiga(righe[i]);
+      const nome = (cols[idxNome] || "").toString().trim();
+      const ruoloRaw = (cols[idxRuolo] || "").toString().trim();
+      const squadra = idxSquadra !== -1 ? normalizzaSquadra(cols[idxSquadra]) : "";
+      const fmvRaw = idxFmv !== -1 ? cols[idxFmv] : "";
+      const ruolo = normalizzaRuoloClassic(ruoloRaw);
+      const fmv = parseFloat(fmvRaw) || 0;
+      if (!nome || !ruolo) continue;
+      newDb[nome] = { ruolo, squadra, fmv };
+      count++;
+    }
+    if (count === 0) { setImportStatus("❌ Nessun giocatore trovato — controlla il formato"); return; }
+    setDatabase(newDb);
+    setListoneTesto("");
+    setImportStatus(`✅ ${count} giocatori importati (totale ${Object.keys(newDb).length})`);
+  };
+
+  const getFMVBase = (fmv) => fmv ? Math.round((fmv / 1000) * budgetTotale) : 0;
+
+  const correzioneMercato = useMemo(() => {
+    const ratios = [];
+    acquisti.forEach(a => {
+      const e = database[a.nome];
+      const pagato = prezziPagati[a.nome];
+      if (e && e.fmv && pagato) {
+        const base = getFMVBase(e.fmv);
+        if (base > 0) ratios.push(pagato / base);
+      }
+    });
+    altriAcquisti.forEach(a => {
+      const e = database[a.nome];
+      if (e && e.fmv) {
+        const base = getFMVBase(e.fmv);
+        if (base > 0 && a.prezzo > 0) ratios.push(a.prezzo / base);
+      }
+    });
+    if (ratios.length === 0) return 1;
+    const media = ratios.reduce((s, r) => s + r, 0) / ratios.length;
+    return Math.min(2, Math.max(0.5, media));
+  }, [acquisti, altriAcquisti, prezziPagati, database, budgetTotale]);
+
+  const getFMVScalato = (fmv) => Math.round(getFMVBase(fmv) * correzioneMercato);
+
+  const spesaFatta = acquisti.reduce((sum, a) => sum + (prezziPagati[a.nome] || getFMVScalato(database[a.nome]?.fmv) || 0), 0);
+  const budgetResiduo = budgetTotale - spesaFatta;
+  const slotTotali = Object.values(ROSTER_SLOTS).reduce((a,b)=>a+b,0);
+  const slotRimasti = Math.max(1, slotTotali - acquisti.length);
+  const budgetMedioSlot = budgetResiduo / slotRimasti;
+
+  const calcolaDifficoltaMatch = (squadra, reparto, giornata) => {
+    const match = calendario.find(m => m.giornata === giornata && (m.casa === squadra || m.trasferta === squadra));
+    if (!match) return null;
+    const isCasa = match.casa === squadra;
+    const avversario = isCasa ? match.trasferta : match.casa;
+    const fs = forzaSquadre[squadra] || { attacco: 5, centrocampo: 5, difesa: 5 };
+    const fa = forzaSquadre[avversario] || { attacco: 5, centrocampo: 5, difesa: 5 };
+    const bonus = isCasa ? CASA_BONUS : -CASA_BONUS;
+    let raw;
+    const campo = REPARTO_FORZA[reparto] || "centrocampo";
+    // scala 1-10: divido per 2 la differenza grezza così l'output finale (1-5, invariato) si comporta
+    // come prima per input equivalenti, ma con più sfumature possibili nella configurazione delle squadre
+    if (campo === "attacco") raw = (fs.attacco - fa.difesa) / 2 + bonus;
+    else if (campo === "difesa") raw = (fs.difesa - fa.attacco) / 2 - bonus;
+    else raw = (fs.centrocampo - fa.centrocampo) / 2 + bonus * 0.5;
+    // il portiere eredita il voto difesa, ma il legame è dosabile: a peso 100% segue in pieno la difesa,
+    // a peso più basso si ammorbidisce verso il neutro (nessuna correlazione)
+    if (reparto === "P" && pesoPortiereDifesa < 100) raw = raw * (pesoPortiereDifesa / 100);
+    return Math.min(5, Math.max(1, Math.round(3 + raw)));
+  };
+
+  const coefficienteCalendario = (squadra, reparto) => {
+    const punteggi = [];
+    for (let g = giornataAttuale; g < giornataAttuale + finestraGiornate; g++) {
+      const s = calcolaDifficoltaMatch(squadra, reparto, g);
+      if (s !== null) punteggi.push(s);
+    }
+    if (punteggi.length === 0) return null;
+    return punteggi.reduce((a, b) => a + b, 0) / punteggi.length;
+  };
+
+  // ---- Griglia Abbinamenti: punteggio puro calendario (nessun FMV/budget), incrocia le partite di un gruppo di squadre ----
+  const valutaGruppoCalendario = (squadre, reparto, gMin, gMax) => {
+    const modalitaMedia = reparto !== "P"; // P: scegli il migliore (rotazione) — D/C/A: li schieri tutti insieme
+    let facili = 0, medie = 0, difficili = 0, casa = 0, fuori = 0, totale = 0;
+    for (let g = gMin; g <= gMax; g++) {
+      const risultatiGiornata = [];
+      squadre.forEach(sq => {
+        const raw = calcolaDifficoltaMatch(sq, reparto, g);
+        if (raw === null) return;
+        const match = calendario.find(m => m.giornata === g && (m.casa === sq || m.trasferta === sq));
+        risultatiGiornata.push({ raw, isCasa: match ? match.casa === sq : null });
+      });
+      if (risultatiGiornata.length === 0) continue;
+      totale++;
+      let rank, isCasaContata;
+      if (modalitaMedia) {
+        rank = Math.round(risultatiGiornata.reduce((s, r) => s + r.raw, 0) / risultatiGiornata.length);
+        risultatiGiornata.forEach(r => { if (r.isCasa === true) casa++; else if (r.isCasa === false) fuori++; });
+      } else {
+        const best = risultatiGiornata.reduce((a, b) => (b.raw > a.raw ? b : a));
+        rank = best.raw;
+        if (best.isCasa === true) casa++; else if (best.isCasa === false) fuori++;
+      }
+      if (rank >= 4) facili++;
+      else if (rank === 3) medie++;
+      else difficili++;
+    }
+    const score = totale > 0 ? Math.round(((facili + medie * 0.5) / totale) * 100) : null;
+    return { facili, medie, difficili, casa, fuori, totale, score };
+  };
+
+  const combinazioni = (arr, k) => {
+    if (k === 0) return [[]];
+    if (arr.length < k) return [];
+    const [head, ...tail] = arr;
+    return [...combinazioni(tail, k - 1).map(c => [head, ...c]), ...combinazioni(tail, k)];
+  };
+
+  const grigliaDettaglioSelezione = useMemo(() => {
+    if (grigliaSquadreSelezionate.length === 0 || calendario.length === 0) return null;
+    return valutaGruppoCalendario(grigliaSquadreSelezionate, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax);
+  }, [grigliaSquadreSelezionate, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax, calendario, forzaSquadre, pesoPortiereDifesa]);
+
+  // striscia calendario: una riga per squadra selezionata, un quadratino colorato per giornata
+  const grigliaStriscia = useMemo(() => {
+    if (grigliaSquadreSelezionate.length === 0 || calendario.length === 0) return null;
+    return grigliaSquadreSelezionate.map(sq => {
+      const giornate = [];
+      for (let g = grigliaGiornataMin; g <= grigliaGiornataMax; g++) {
+        giornate.push({ g, raw: calcolaDifficoltaMatch(sq, grigliaReparto, g) });
+      }
+      return { squadra: sq, giornate };
+    });
+  }, [grigliaSquadreSelezionate, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax, calendario, forzaSquadre, pesoPortiereDifesa]);
+
+  const grigliaMatrice = useMemo(() => {
+    if (calendario.length === 0 || squadreDisponibili.length === 0) return null;
+    const m = {};
+    squadreDisponibili.forEach(a => {
+      m[a] = {};
+      squadreDisponibili.forEach(b => {
+        if (a === b) { m[a][b] = null; return; }
+        if (m[b] && m[b][a] !== undefined) { m[a][b] = m[b][a]; return; }
+        m[a][b] = valutaGruppoCalendario([a, b], grigliaReparto, grigliaGiornataMin, grigliaGiornataMax).score;
+      });
+    });
+    return m;
+  }, [calendario, squadreDisponibili, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax, forzaSquadre, pesoPortiereDifesa]);
+
+  const grigliaMaxSelezione = grigliaReparto === "P" ? 3 : (gruppoDimReparto[grigliaReparto] || 3);
+
+  const grigliaTopAbbinamenti = useMemo(() => {
+    if (calendario.length === 0 || squadreDisponibili.length < 2) return { top2: null, top3: null, topNaturale: null };
+    let top2 = null;
+    combinazioni(squadreDisponibili, 2).forEach(coppia => {
+      const r = valutaGruppoCalendario(coppia, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax);
+      if (!top2 || (r.score !== null && r.score > top2.score)) top2 = { squadre: coppia, ...r };
+    });
+    let top3 = null;
+    if (squadreDisponibili.length >= 3) {
+      combinazioni(squadreDisponibili, 3).forEach(tris => {
+        const r = valutaGruppoCalendario(tris, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax);
+        if (!top3 || (r.score !== null && r.score > top3.score)) top3 = { squadre: tris, ...r };
+      });
+    }
+    let topNaturale = null;
+    if (grigliaMaxSelezione !== 2 && grigliaMaxSelezione !== 3 && squadreDisponibili.length >= grigliaMaxSelezione) {
+      combinazioni(squadreDisponibili, grigliaMaxSelezione).forEach(gruppo => {
+        const r = valutaGruppoCalendario(gruppo, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax);
+        if (!topNaturale || (r.score !== null && r.score > topNaturale.score)) topNaturale = { squadre: gruppo, ...r };
+      });
+    }
+    return { top2, top3, topNaturale };
+  }, [calendario, squadreDisponibili, grigliaReparto, grigliaGiornataMin, grigliaGiornataMax, forzaSquadre, grigliaMaxSelezione]);
+
+  useEffect(() => {
+    setGrigliaSquadreSelezionate(prev => prev.length > grigliaMaxSelezione ? prev.slice(0, grigliaMaxSelezione) : prev);
+  }, [grigliaMaxSelezione]);
+
+  const toggleGrigliaSquadra = (sq) => {
+    setGrigliaSquadreSelezionate(prev => {
+      if (prev.includes(sq)) return prev.filter(s => s !== sq);
+      if (prev.length >= grigliaMaxSelezione) return prev;
+      return [...prev, sq];
+    });
+  };
+
+  const calcolaRischio = (nome, ruolo) => {
+    const tuttiRuolo = Object.entries(database)
+      .filter(([n, e]) => e.ruolo === ruolo)
+      .sort((a, b) => b[1].fmv - a[1].fmv)
+      .map(([n]) => n);
+    const rank = tuttiRuolo.indexOf(nome);
+    const slotLega = numeroPartecipanti * (ROSTER_SLOTS[ruolo] || 1);
+    if (rank === -1) return { label: "DISPONIBILE", livello: 0 };
+    if (rank < slotLega * 0.7) return { label: "RISCHIO ALTO", livello: 2 };
+    if (rank < slotLega) return { label: "RISCHIO MEDIO", livello: 1 };
+    return { label: "PROBABILE DISPONIBILE", livello: 0 };
+  };
+
+  // ---- motore dinamico: combo di N squadre per reparto, corretto per FMV dei giocatori ancora disponibili ----
+  const REPARTO_ORDINE = ["P", "D", "C", "A"];
+
+  const nomiEsclusi = useMemo(() => new Set([...acquisti.map(a => a.nome), ...altriAcquisti.map(a => a.nome)]), [acquisti, altriAcquisti]);
+
+  const repartoAttivo = useMemo(() => {
+    for (const r of REPARTO_ORDINE) {
+      const presi = acquisti.filter(a => a.ruolo === r).length;
+      if (presi < ROSTER_SLOTS[r]) return r;
+    }
+    return null;
+  }, [acquisti]);
+
+  const GRUPPO_DIM = gruppoDimReparto[repartoAttivo] || 3;
+
+  const migliorDisponibile = (squadra, ruolo) => {
+    let best = null;
+    Object.entries(database).forEach(([nome, e]) => {
+      if (e.ruolo === ruolo && e.squadra === squadra && !nomiEsclusi.has(nome)) {
+        if (!best || e.fmv > best.fmv) best = { nome, fmv: e.fmv };
+      }
+    });
+    return best;
+  };
+
+  const maxFmvReparto = (ruolo) => {
+    let max = 1;
+    const squadreValide = new Set(squadreDisponibili);
+    Object.values(database).forEach(e => { if (e.ruolo === ruolo && e.fmv > max && (squadreValide.size === 0 || squadreValide.has(e.squadra))) max = e.fmv; });
+    return max;
+  };
+
+  const fisseGlobali = (ruolo) => [...new Set(acquisti.filter(a => a.ruolo === ruolo).map(a => a.squadra))];
+  const conteggioSquadraTotale = (squadra) => acquisti.filter(a => a.squadra === squadra).length;
+  const SOGLIA_DIVERSIFICAZIONE = 3; // oltre questa soglia di giocatori già presi dalla stessa squadra (in tutta la rosa) scatta la penalità
+  const PESO_DIVERSIFICAZIONE = 0.15; // -15% di valore per ogni giocatore oltre soglia, fino a un tetto
+
+  const valutaGruppo = (gruppo, ruolo, maxFmv) => {
+    let somma = 0;
+    let costoMancanti = 0;
+    let slotMancanti = 0;
+    const dettaglio = gruppo.map(sq => {
+      const g = migliorDisponibile(sq, ruolo);
+      const calScore = coefficienteCalendario(sq, ruolo);
+      const fattoreCal = calScore !== null ? calScore / 3 : 1;
+      const gia = fisseGlobali(ruolo).includes(sq);
+      const giaInRosa = conteggioSquadraTotale(sq);
+      const penalitaDiversificazione = gia ? 0 : Math.min(0.6, Math.max(0, giaInRosa - SOGLIA_DIVERSIFICAZIONE) * PESO_DIVERSIFICAZIONE);
+      const valore = (g ? g.fmv : 0) * fattoreCal * (1 - penalitaDiversificazione);
+      somma += valore;
+      const prezzoStimato = g ? getFMVScalato(g.fmv) : 0;
+      if (!gia) { costoMancanti += prezzoStimato; slotMancanti++; }
+      return { squadra: sq, giocatore: g, calScore, fattoreCal, valore, prezzoStimato, giaInRosa, penalitaDiversificazione };
+    });
+    const score = Math.round(Math.min(100, (somma / (maxFmv * 1.67 * gruppo.length)) * 100));
+    const fuoriBudget = costoMancanti > budgetResiduo;
+    // sostenibilità reale: confronto con la "quota equa" di budget per quegli slot, viste TUTTE le altre cose
+    // che devi ancora comprare — non basta stare dentro il residuo totale, un colpo può comunque essere
+    // sproporzionato rispetto a quanto dovresti spendere lì in media (es. 3 top a centrocampo)
+    const quotaEqua = budgetMedioSlot * slotMancanti;
+    const rapportoSostenibilita = quotaEqua > 0 ? costoMancanti / quotaEqua : 1;
+    const sostenibilita = rapportoSostenibilita > 2.5 ? "molto impegnativo" : rapportoSostenibilita > 1.5 ? "impegnativo" : "sostenibile";
+    return { gruppo, dettaglio, score, costoMancanti, fuoriBudget, sostenibilita, rapportoSostenibilita };
+  };
+
+  // ---- motore dedicato portieri: titolare + jolly economico a rotazione sul calendario ----
+  const SOGLIA_JOLLY = 0.4; // % del FMV massimo portiere sotto la quale un portiere è "economico"
+  const SOGLIA_BIG = 0.6; // % del FMV massimo portiere sopra la quale un portiere è "big"
+  const SCORE_MINIMO = 35; // combo sotto questa soglia sono poco pratiche, non le mostro
+
+  const motorePortieri = useMemo(() => {
+    if (repartoAttivo !== "P") return null;
+    const presi = acquisti.filter(a => a.ruolo === "P");
+    if (presi.length >= ROSTER_SLOTS.P) return null;
+    const maxFmv = maxFmvReparto("P");
+    const spesaPortieriFatta = presi.reduce((s, a) => s + (prezziPagati[a.nome] || getFMVScalato(database[a.nome]?.fmv) || 0), 0);
+    const tettoResiduo = budgetMaxPortieri - spesaPortieriFatta; // quanto puoi ancora spendere sulla porta
+    const gMin = giornataAttuale, gMax = giornataAttuale + finestraGiornate - 1;
+
+    const squadreValide = new Set(squadreDisponibili);
+    const candidati = Object.entries(database)
+      .filter(([nome, e]) => e.ruolo === "P" && !nomiEsclusi.has(nome) && squadreValide.has(e.squadra))
+      .map(([nome, e]) => {
+        const calScore = coefficienteCalendario(e.squadra, "P");
+        const fattoreCal = calScore !== null ? calScore / 3 : 1;
+        return { nome, squadra: e.squadra, fmv: e.fmv, calScore, fattoreCal, valore: e.fmv * fattoreCal, prezzoStimato: getFMVScalato(e.fmv) };
+      });
+
+    // il VERO titolare di ogni squadra si calcola sul listone ORIGINALE completo (non solo su chi resta disponibile),
+    // ma solo tra le squadre effettivamente presenti nel calendario caricato (esclude retrocesse/non più in Serie A):
+    // se quel titolare è già stato preso (da te o da un avversario), l'intera squadra esce dai pool "titolare" —
+    // il vice rimasto NON prende il suo posto, sarebbe un fallback silenzioso senza senso
+    const titolareOriginale = {};
+    Object.entries(database).forEach(([nome, e]) => {
+      if (e.ruolo !== "P" || !squadreValide.has(e.squadra)) return;
+      if (!titolareOriginale[e.squadra] || e.fmv > titolareOriginale[e.squadra].fmv) titolareOriginale[e.squadra] = { nome, fmv: e.fmv };
+    });
+    const soloTitolari = candidati.filter(c => titolareOriginale[c.squadra] && titolareOriginale[c.squadra].nome === c.nome);
+    const squadreConTitolareLibero = new Set(soloTitolari.map(c => c.squadra));
+
+    // --- strategie di confronto: il punteggio è SEMPRE puro calendario (stesso motore della Griglia),
+    // non FMV — l'FMV serve solo a classificare big/piccola, mai a pesare lo score.
+    // Il tetto porta è INFORMATIVO, non un filtro: sforare di poco non deve far sparire una combo ottima,
+    // in un'asta reale il margine dipende anche da errori/occasioni degli avversari ---
+    // "big" = le migliori N squadre per FMV del titolare (classifica per posizione, non percentuale del massimo:
+    // una soglia percentuale è fragile, un solo portiere prezzato in modo anomalo sposta il taglio e può escludere
+    // squadre ovviamente "big" come la Roma). "piccola" resta percentuale, perché lì vogliamo il vero economico.
+    const NUM_BIG = 5;
+    const ordinatiPerFmv = [...soloTitolari].sort((a, b) => b.fmv - a.fmv);
+    const big = ordinatiPerFmv.slice(0, Math.min(NUM_BIG, ordinatiPerFmv.length));
+    const sogliaBig = big.length > 0 ? big[big.length - 1].fmv : maxFmv * SOGLIA_BIG;
+    const sogliaPiccola = maxFmv * SOGLIA_JOLLY;
+    const piccole = soloTitolari.filter(c => c.fmv <= sogliaPiccola);
+
+    const scartoTetto = (costo) => Math.max(0, costo - Math.max(0, tettoResiduo));
+    const costo2 = (a, b) => a.prezzoStimato + b.prezzoStimato;
+
+    // 1) big + jolly (titolare) di squadre diverse (mai big+big: piccole è già un pool disgiunto da big).
+    // "big" sono FISSE (le migliori 5 per FMV del titolare) — l'ordine di comparsa segue quel ranking,
+    // NON viene rimescolato in base a chi ha il calendario migliore in questa finestra di giornate
+    const perBigTeam = {};
+    big.forEach(b => {
+      piccole.filter(p => p.squadra !== b.squadra).forEach(p => {
+        const costo = costo2(b, p);
+        const cal = valutaGruppoCalendario([b.squadra, p.squadra], "P", gMin, gMax);
+        if (cal.score === null || cal.score < SCORE_MINIMO) return;
+        const combo = { squadre: [b.squadra, p.squadra], lista: [b, p], costo, scarto: scartoTetto(costo), ...cal };
+        (perBigTeam[b.squadra] = perBigTeam[b.squadra] || []).push(combo);
+      });
+    });
+    const migliorPerBigTeam = big.map(b => {
+      const lista = (perBigTeam[b.squadra] || []).slice().sort((x, y) => y.score - x.score);
+      return { squadra: b.squadra, combos: lista.slice(0, 3), bestScore: lista.length ? lista[0].score : null };
+    });
+    let topBigJolly = migliorPerBigTeam.flatMap(g => g.combos);
+    const elencoBig = big.map(b => b.squadra);
+
+    // diagnostico per squadra: ora il budget non esclude più nessuno, quindi le uniche vere esclusioni sono
+    // titolare mancante/preso, oppure nessun abbinamento sopra la soglia minima di punteggio calendario
+    const nomiAcquistatiSet = new Set(acquisti.map(a => a.nome));
+    const diagnosticoPortieri = squadreDisponibili.map(sq => {
+      const tit = titolareOriginale[sq];
+      if (!tit) return { squadra: sq, titolare: null, stato: "nessun portiere P nel listone per questa squadra" };
+      if (nomiEsclusi.has(tit.nome)) {
+        const presoDaTe = nomiAcquistatiSet.has(tit.nome);
+        return { squadra: sq, titolare: tit.nome, fmv: tit.fmv, stato: presoDaTe ? "titolare già in Rosa (tuo)" : "titolare preso da un avversario" };
+      }
+      const prezzoSolo = getFMVScalato(tit.fmv);
+      if (tit.fmv >= sogliaBig) {
+        if (!perBigTeam[sq]) return { squadra: sq, titolare: tit.nome, fmv: tit.fmv, stato: "big, ma nessun abbinamento supera il punteggio minimo di calendario" };
+        return { squadra: sq, titolare: tit.nome, fmv: tit.fmv, stato: "big" };
+      }
+      if (tit.fmv <= sogliaPiccola) return { squadra: sq, titolare: tit.nome, fmv: tit.fmv, stato: "piccola/jolly" };
+      return { squadra: sq, titolare: tit.nome, fmv: tit.fmv, stato: "fascia media" };
+    });
+
+    // 2) blocco stessa squadra: titolare + riserva — MAI se entrambi sono "big" (regola 1), MAI se il titolare è già preso
+    const perSquadra = {};
+    candidati.forEach(c => { (perSquadra[c.squadra] = perSquadra[c.squadra] || []).push(c); });
+    let bloccoStessaSquadra = Object.entries(perSquadra)
+      .filter(([sq, lista]) => lista.length >= 2 && squadreConTitolareLibero.has(sq))
+      .map(([sq, lista]) => {
+        const top2 = [...lista].sort((a, b) => b.fmv - a.fmv).slice(0, 2);
+        const cal = valutaGruppoCalendario([sq], "P", gMin, gMax);
+        const costo = costo2(top2[0], top2[1]);
+        return { squadra: sq, squadre: [sq], lista: top2, top2, costo, scarto: scartoTetto(costo), ...cal };
+      })
+      .filter(combo => !(combo.top2[0].fmv >= sogliaBig && combo.top2[1].fmv >= sogliaBig) && combo.score !== null && combo.score >= SCORE_MINIMO)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    // 3) tris di titolari di squadre medio-piccole diverse (nessuna "big", nessun backup isolato)
+    let trisPiccole = combinazioni(piccole, 3)
+      .map(lista => {
+        const squadre = lista.map(c => c.squadra);
+        const costo = lista.reduce((s, c) => s + c.prezzoStimato, 0);
+        const cal = valutaGruppoCalendario(squadre, "P", gMin, gMax);
+        return { squadre, lista, costo, scarto: scartoTetto(costo), ...cal };
+      })
+      .filter(v => v.score !== null && v.score >= SCORE_MINIMO)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    const strategie = { topBigJolly, migliorPerBigTeam, elencoBig, diagnosticoPortieri, bloccoStessaSquadra, trisPiccole, tettoResiduo };
+
+    if (presi.length === 0) {
+      const top = [...soloTitolari]
+        .map(c => ({ ...c, scarto: scartoTetto(c.prezzoStimato) }))
+        .sort((a, b) => b.valore - a.valore).slice(0, 5);
+      return { fase: "titolare", suggeriti: top, presi, strategie };
+    }
+    const squadreGia = new Set(presi.map(p => p.squadra));
+    const jolly = soloTitolari
+      .filter(c => c.fmv <= sogliaPiccola && !squadreGia.has(c.squadra))
+      .map(c => ({ ...c, scarto: scartoTetto(c.prezzoStimato) }))
+      .sort((a, b) => b.fattoreCal - a.fattoreCal || b.fmv - a.fmv)
+      .slice(0, 5);
+    return { fase: "jolly", suggeriti: jolly, presi, strategie };
+  }, [repartoAttivo, database, acquisti, nomiEsclusi, calendario, forzaSquadre, giornataAttuale, finestraGiornate, budgetTotale, correzioneMercato, budgetMaxPortieri, prezziPagati, pesoPortiereDifesa]);
+
+  const comboReparto = useMemo(() => {
+    if (!repartoAttivo || repartoAttivo === "P" || squadreDisponibili.length === 0) return null;
+    const ruolo = repartoAttivo;
+    const squadreConGiocatori = squadreDisponibili.filter(sq =>
+      Object.values(database).some(e => e.ruolo === ruolo && e.squadra === sq)
+    );
+    const fisse = [...new Set(acquisti.filter(a => a.ruolo === ruolo).map(a => a.squadra))];
+    const maxFmv = maxFmvReparto(ruolo);
+
+    if (fisse.length >= GRUPPO_DIM) {
+      const gruppo = fisse.slice(0, GRUPPO_DIM);
+      return { ruolo, fisse, completo: true, top: [valutaGruppo(gruppo, ruolo, maxFmv)] };
+    }
+    const restanti = squadreConGiocatori.filter(sq => !fisse.includes(sq));
+    const daAggiungere = GRUPPO_DIM - fisse.length;
+    const combos = combinazioni(restanti, daAggiungere)
+      .map(extra => valutaGruppo([...fisse, ...extra], ruolo, maxFmv))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+    return { ruolo, fisse, completo: false, top: combos };
+  }, [repartoAttivo, squadreDisponibili, database, acquisti, nomiEsclusi, calendario, forzaSquadre, giornataAttuale, finestraGiornate, gruppoDimReparto, pesoPortiereDifesa]);
+
+  const getRischioColor = (livello) => livello === 2 ? "#FF4D6D" : livello === 1 ? "#FBBF24" : "#34D399";
+
+  return (
+    <div className="min-h-screen text-[#E8ECEF] p-4" style={{ background: "radial-gradient(circle at 20% 0%, #161A20 0%, #0B0D10 55%)" }}>
+      <div className="max-w-6xl mx-auto space-y-4">
+
+        {/* HEADER */}
+        <div className="border-b-2 border-[#D4FF3F] pb-4 mb-2">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+              <h1 className="text-2xl font-display font-extrabold text-white tracking-tight">CLASSIC <span className="text-[#D4FF3F]">// SINERGIE</span></h1>
+              <p className="text-[#8B95A1] text-xs mono mt-1">DB {Object.keys(database).length} giocatori · {squadreDisponibili.length} squadre · reparto attivo: {repartoAttivo ? RUOLO_LABEL[repartoAttivo] : "rosa completa 🎉"}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <BtnGhost onClick={() => setShowRosaPopup(!showRosaPopup)} active={showRosaPopup}>💰 Rosa ({acquisti.length})</BtnGhost>
+              <BtnGhost onClick={() => setShowMercatoModal(true)}>🕵️ Mercato ({altriAcquisti.length})</BtnGhost>
+              <BtnGhost onClick={() => setShowPreparaModal(true)}>⚙️ Prepara</BtnGhost>
+            </div>
+          </div>
+        </div>
+
+        {/* INPUT AGGIUNGI GIOCATORE — in cima, è l'azione più frequente durante l'asta */}
+        <Panel className="p-4 relative">
+          <div className="relative">
+            <input type="text"
+              className="w-full bg-[#0F1216] border border-[#2A2F37] p-3 rounded-md text-sm focus:border-[#D4FF3F] focus:outline-none text-white placeholder-[#565D68]"
+              placeholder={Object.keys(database).length === 0 ? "Carica prima il listone..." : "➕ Cerca giocatore per nome e aggiungilo alla rosa..."}
+              value={inputNome}
+              onChange={(e) => setInputNome(e.target.value)}
+              disabled={Object.keys(database).length === 0}
+              onKeyDown={(e) => {
+                if (autocomplete.length === 0) return;
+                if (e.key === "ArrowDown") { e.preventDefault(); setAutocompleteIndex(Math.min(autocompleteIndex+1, autocomplete.length-1)); }
+                else if (e.key === "ArrowUp") { e.preventDefault(); setAutocompleteIndex(Math.max(autocompleteIndex-1, 0)); }
+                else if (e.key === "Enter") { e.preventDefault(); selezionaGiocatore(autocomplete[autocompleteIndex]); }
+              }} />
+            {autocomplete.length > 0 && (
+              <div className="absolute top-full left-0 right-0 bg-[#14181D] border border-[#D4FF3F]/40 rounded-md mt-1 shadow-2xl z-30 max-h-72 overflow-y-auto">
+                {autocomplete.map((nome, idx) => {
+                  const e = database[nome];
+                  return (
+                    <div key={idx} onClick={() => selezionaGiocatore(nome)}
+                      className={`p-3 border-b border-[#2A2F37] flex justify-between items-center cursor-pointer ${idx===autocompleteIndex ? "bg-[#D4FF3F]/10" : "hover:bg-white/5"}`}>
+                      <div>
+                        <span className="font-bold text-sm text-white">{nome}</span>
+                        <span className="text-xs text-[#8B95A1] ml-2">{e.squadra} · {e.ruolo}</span>
+                      </div>
+                      <span className="text-xs mono text-[#8B95A1] bg-[#0F1216] px-2 py-1 rounded">~{getFMVScalato(e.fmv)} cr</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Panel>
+
+        {/* STRISCIA ASSEGNAZIONE — chi ha preso il giocatore selezionato */}
+        {giocatoreSelezionato && database[giocatoreSelezionato] && (() => {
+          const e = database[giocatoreSelezionato];
+          const tutteDaNominare = squadreAvversarie.length > 0 && squadreAvversarie.every((n, i) => n === `Avversario ${i + 1}`);
+          const prezzoValido = parseInt(prezzoSelezione) > 0;
+          return (
+            <Panel className="p-4 border-[#D4FF3F]/50">
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div>
+                  <span className="font-bold text-white">{giocatoreSelezionato}</span>
+                  <span className="text-xs text-[#8B95A1] ml-2">{e.squadra} · {e.ruolo} · FMV {e.fmv}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-[#8B95A1]">Prezzo pagato*
+                    <input type="number" value={prezzoSelezione} onChange={(ev) => setPrezzoSelezione(ev.target.value)}
+                      onFocus={(ev) => ev.target.select()}
+                      className="w-20 ml-2 bg-[#0F1216] border border-[#2A2F37] text-white rounded p-1.5 text-center font-bold" autoFocus />
+                  </label>
+                  <button onClick={annullaSelezione} className="text-[#8B95A1] hover:text-[#FF4D6D] text-lg px-1">✕</button>
+                </div>
+              </div>
+              <p className="text-[10px] text-[#565D68] mb-2">Chi lo ha preso?</p>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={assegnaAMe} disabled={!prezzoValido}
+                  className={`px-3 py-2 rounded-md text-xs font-bold ${prezzoValido ? "bg-[#D4FF3F] text-black hover:brightness-95" : "bg-[#2A2F37] text-[#565D68] cursor-not-allowed"}`}>
+                  Io
+                </button>
+                {tutteDaNominare ? (
+                  <button onClick={() => setShowMercatoModal(true)}
+                    className="px-3 py-2 rounded-md text-xs font-bold border border-[#FBBF24]/50 text-[#FBBF24] hover:bg-[#FBBF24]/10">
+                    ⚠️ Nomina prima le squadre avversarie in 🕵️ Mercato
+                  </button>
+                ) : (
+                  squadreAvversarie.map((nome, idx) => (
+                    <button key={idx} onClick={() => assegnaAdAvversario(nome)} disabled={!prezzoValido}
+                      className={`px-3 py-2 rounded-md text-xs font-bold border ${prezzoValido ? "border-[#2A2F37] text-[#E8ECEF] hover:border-[#D4FF3F] hover:text-[#D4FF3F]" : "border-[#2A2F37] text-[#565D68] cursor-not-allowed"}`}>
+                      {nome}
+                    </button>
+                  ))
+                )}
+              </div>
+            </Panel>
+          );
+        })()}
+
+        {Object.keys(database).length === 0 && (
+          <Panel className="p-4 text-center border-[#FF4D6D]/40">
+            <p className="text-[#FF4D6D] font-bold text-sm">⚠️ Carica prima il listone da 📊 Listone</p>
+          </Panel>
+        )}
+        {Object.keys(database).length > 0 && calendario.length === 0 && (
+          <Panel className="p-4 text-center border-[#38BDF8]/40">
+            <p className="text-[#38BDF8] font-bold text-sm">📅 Carica anche il calendario — senza, i punteggi combo usano solo l'FMV (calendario neutro)</p>
+          </Panel>
+        )}
+
+        {/* MOTORE PORTIERI — titolare poi jolly economico per calendario */}
+        {motorePortieri && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-display font-extrabold text-[#D4FF3F] uppercase tracking-wide">🧤 Reparto attivo: Portiere</h2>
+              <span className="text-xs mono text-[#8B95A1]">{motorePortieri.presi.length}/{ROSTER_SLOTS.P} slot coperti</span>
+              <span className="text-xs mono" style={{ color: motorePortieri.strategie.tettoResiduo < 10 ? "#FF4D6D" : "#8B95A1" }} title="Riferimento indicativo — non esclude le combo, segnala solo quanto sfori">tetto porta residuo: {motorePortieri.strategie.tettoResiduo} / {budgetMaxPortieri} cr (indicativo)</span>
+            </div>
+            {motorePortieri.fase === "titolare" ? (
+              <p className="text-xs text-[#8B95A1]">Nessun portiere ancora — questi sono i migliori titolari disponibili (qualità × calendario).</p>
+            ) : (
+              <p className="text-xs text-[#8B95A1]">
+                Hai già <span className="text-[#D4FF3F] font-bold">{motorePortieri.presi.map(p => p.nome).join(", ")}</span> — qui sotto i migliori "jolly" economici (FMV basso) da alternare per calendario, non un secondo titolare.
+              </p>
+            )}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+              {motorePortieri.suggeriti.length === 0 && (
+                <Panel className="p-2 col-span-2 sm:col-span-5"><p className="text-xs text-[#FF4D6D] font-bold">Nessun candidato trovato con questi criteri.</p></Panel>
+              )}
+              {motorePortieri.suggeriti.map((c, i) => (
+                <Panel key={i} className="p-2">
+                  <div className="flex justify-between items-start">
+                    <span className="font-bold text-xs text-white leading-tight">{c.nome}</span>
+                    {i === 0 && <span className="text-[#D4FF3F] text-[10px] mono">#1</span>}
+                  </div>
+                  <p className="text-[10px] text-[#8B95A1]">{c.squadra}</p>
+                  <p className="text-[10px] mono text-[#C8D0D9]">~{c.prezzoStimato} cr{c.scarto > 0 && <span className="text-[#FBBF24]"> (+{c.scarto} oltre tetto)</span>}</p>
+                  {c.calScore !== null && <p className="text-[9px] text-[#38BDF8] font-bold">📅{c.calScore.toFixed(1)} ×{c.fattoreCal.toFixed(2)}</p>}
+                </Panel>
+              ))}
+            </div>
+
+            {/* CONFRONTO STRATEGIE PORTIERI */}
+            <div className="space-y-3 pt-2">
+              <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide">🧭 Confronta strategie <span className="text-[#565D68] normal-case font-normal">(punteggio calendario, giornate {giornataAttuale}-{giornataAttuale + finestraGiornate - 1})</span></p>
+
+              <div>
+                <p className="text-[10px] text-[#565D68] mb-1">Top + jolly — le 5 squadre "big" per FMV del titolare (ordine fisso), 3 combo migliori ciascuna</p>
+                <details className="mb-2">
+                  <summary className="text-[10px] text-[#565D68] cursor-pointer">🔍 Diagnostico completo per squadra ({motorePortieri.strategie.diagnosticoPortieri.length}) — clicca per aprire</summary>
+                  <div className="mt-2 grid sm:grid-cols-2 gap-1 max-h-56 overflow-y-auto">
+                    {motorePortieri.strategie.diagnosticoPortieri.map((d, i) => (
+                      <div key={i} className="flex justify-between items-center text-[10px] px-2 py-1 rounded bg-[#0F1216]">
+                        <span className="text-white font-semibold">{d.squadra}</span>
+                        <span className="text-[#8B95A1]">{d.titolare ? `${d.titolare} (${d.fmv})` : "—"} · <span style={{ color: d.stato === "big" ? "#D4FF3F" : d.stato === "piccola/jolly" ? "#38BDF8" : "#FF4D6D" }}>{d.stato}</span></span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+                {motorePortieri.strategie.migliorPerBigTeam.length === 0 && <p className="text-xs text-[#565D68]">Nessuna combo disponibile</p>}
+                <div className="space-y-1.5">
+                  {motorePortieri.strategie.migliorPerBigTeam.map((gruppo, gi) => (
+                    <div key={gi}>
+                      <p className="text-[10px] text-[#8B95A1] font-bold mb-0.5">{gruppo.squadra}</p>
+                      {gruppo.combos.length === 0 ? (
+                        <p className="text-[10px] text-[#565D68] mb-1">Nessun abbinamento sopra la soglia minima di punteggio in questa finestra di giornate.</p>
+                      ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                          {gruppo.combos.map((combo, i) => (
+                            <Panel key={i} className="p-1.5">
+                              <div className="flex justify-between items-center">
+                                <span className="text-[11px] font-bold text-white leading-tight">{combo.squadre.join(" + ")}</span>
+                                <span className="mono text-xs font-extrabold shrink-0 ml-1" style={{ color: combo.score >= 75 ? "#D4FF3F" : combo.score >= 50 ? "#38BDF8" : "#FF4D6D" }}>{combo.score}</span>
+                              </div>
+                              <p className="text-[9px] text-[#8B95A1] leading-tight">{combo.lista.map(c => c.nome).join(" · ")} — ~{combo.costo}cr{combo.scarto > 0 && <span className="text-[#FBBF24]"> (+{combo.scarto})</span>}</p>
+                              <p className="text-[9px] text-[#565D68]">{combo.facili}f·{combo.medie}m·{combo.difficili}d</p>
+                            </Panel>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] text-[#565D68] mb-0.5">Blocco stessa squadra (titolare + riserva)</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {motorePortieri.strategie.bloccoStessaSquadra.length === 0 && <p className="text-xs text-[#565D68] col-span-3">Nessuna squadra con 2+ portieri nel listone</p>}
+                  {motorePortieri.strategie.bloccoStessaSquadra.map((combo, i) => (
+                    <Panel key={i} className="p-1.5">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] font-bold text-white">{combo.squadra}</span>
+                        <span className="mono text-xs font-extrabold shrink-0 ml-1" style={{ color: combo.score >= 75 ? "#D4FF3F" : combo.score >= 50 ? "#38BDF8" : "#FF4D6D" }}>{combo.score}</span>
+                      </div>
+                      <p className="text-[9px] text-[#8B95A1] leading-tight">{combo.lista.map(c => c.nome).join(" + ")} — ~{combo.costo}cr{combo.scarto > 0 && <span className="text-[#FBBF24]"> (+{combo.scarto})</span>}</p>
+                      <p className="text-[9px] text-[#565D68]">{combo.facili}f·{combo.medie}m·{combo.difficili}d</p>
+                    </Panel>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] text-[#565D68] mb-0.5">Tris squadre medio-piccole</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {motorePortieri.strategie.trisPiccole.length === 0 && <p className="text-xs text-[#565D68] col-span-3">Servono almeno 3 squadre "economiche" diverse nel listone</p>}
+                  {motorePortieri.strategie.trisPiccole.map((combo, i) => (
+                    <Panel key={i} className="p-1.5">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] font-bold text-white">{combo.squadre.join(" + ")}</span>
+                        <span className="mono text-xs font-extrabold shrink-0 ml-1" style={{ color: combo.score >= 75 ? "#D4FF3F" : combo.score >= 50 ? "#38BDF8" : "#FF4D6D" }}>{combo.score}</span>
+                      </div>
+                      <p className="text-[9px] text-[#8B95A1] leading-tight">{combo.lista.map(c => c.nome).join(" · ")} — ~{combo.costo}cr{combo.scarto > 0 && <span className="text-[#FBBF24]"> (+{combo.scarto})</span>}</p>
+                      <p className="text-[9px] text-[#565D68]">{combo.facili}f·{combo.medie}m·{combo.difficili}d</p>
+                    </Panel>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MOTORE DINAMICO — combo per il reparto attivo (D/C/A) */}
+        {comboReparto && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-display font-extrabold text-[#D4FF3F] uppercase tracking-wide">🎯 Reparto attivo: {RUOLO_LABEL[comboReparto.ruolo]}</h2>
+              <span className="text-xs mono text-[#8B95A1]">{acquisti.filter(a => a.ruolo === comboReparto.ruolo).length}/{ROSTER_SLOTS[comboReparto.ruolo]} slot coperti</span>
+            </div>
+            {comboReparto.fisse.length > 0 && (
+              <p className="text-xs text-[#8B95A1]">Squadre già presenti in questo reparto: <span className="text-[#D4FF3F] font-bold">{comboReparto.fisse.join(", ")}</span></p>
+            )}
+            {comboReparto.completo && (
+              <Panel className="p-3 border-[#38BDF8]/40">
+                <p className="text-xs text-[#38BDF8] font-bold">Hai già 3+ squadre diverse in questo reparto — punteggio del trio attuale qui sotto.</p>
+              </Panel>
+            )}
+            <div className="space-y-2">
+              {comboReparto.top.map((combo, i) => (
+                <Panel key={i} className="p-4">
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
+                    <span className="font-bold text-white text-sm">{combo.gruppo.join(" + ")}</span>
+                    <div className="flex items-center gap-2">
+                      {combo.costoMancanti > 0 && (
+                        <span className={`text-xs mono font-bold ${combo.fuoriBudget ? "text-[#FF4D6D]" : "text-[#8B95A1]"}`}>
+                          costo mancanti: ~{combo.costoMancanti} cr{combo.fuoriBudget ? " ❌" : ""}
+                        </span>
+                      )}
+                      <span className="mono text-lg font-extrabold" style={{ color: combo.score >= 75 ? "#D4FF3F" : combo.score >= 50 ? "#38BDF8" : "#FF4D6D" }}>{combo.score}/100</span>
+                    </div>
+                  </div>
+                  {combo.costoMancanti > 0 && (
+                    <p className="text-[10px] font-bold mb-2" style={{ color: combo.sostenibilita === "sostenibile" ? "#34D399" : combo.sostenibilita === "impegnativo" ? "#FBBF24" : "#FF4D6D" }}>
+                      {combo.sostenibilita === "sostenibile" ? "✅ sostenibile" : combo.sostenibilita === "impegnativo" ? "⚠️ impegnativo" : "🔴 molto impegnativo"} — costa {combo.rapportoSostenibilita.toFixed(1)}× la quota media per quegli slot vista tutta la rosa che ti manca
+                    </p>
+                  )}
+                  {combo.fuoriBudget && (
+                    <p className="text-[10px] text-[#FF4D6D] font-bold mb-2">⚠️ Costo combinato oltre il budget residuo ({Math.round(budgetResiduo)} cr) — probabilmente non fattibile tutta insieme.</p>
+                  )}
+                  <div className="grid sm:grid-cols-3 gap-2">
+                    {combo.dettaglio.map((d, j) => {
+                      const gia = comboReparto.fisse.includes(d.squadra);
+                      return (
+                        <div key={j} className="rounded-md border p-3" style={{ borderColor: gia ? "#D4FF3F55" : "#2A2F37", background: gia ? "#D4FF3F0D" : "#0F1216" }}>
+                          <p className="text-xs text-[#8B95A1] mb-1">{d.squadra} {gia && <span className="text-[#D4FF3F]">✓ già in rosa</span>}</p>
+                          {d.giocatore ? (
+                            <>
+                              <p className="font-bold text-sm text-white">{d.giocatore.nome}</p>
+                              <p className="text-xs mono text-[#C8D0D9]">~{getFMVScalato(d.giocatore.fmv)} cr</p>
+                            </>
+                          ) : (
+                            <p className="text-xs text-[#FF4D6D] font-bold">nessun giocatore disponibile</p>
+                          )}
+                          {d.calScore !== null && <p className="text-[10px] text-[#38BDF8] font-bold mt-1">📅 {d.calScore.toFixed(1)}/5 · ×{d.fattoreCal.toFixed(2)}</p>}
+                          {d.penalitaDiversificazione > 0 && <p className="text-[10px] text-[#FBBF24] font-bold mt-0.5">⚠️ già {d.giaInRosa} da questa squadra in rosa (−{Math.round(d.penalitaDiversificazione*100)}%)</p>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Panel>
+              ))}
+            </div>
+          </div>
+        )}
+        {!repartoAttivo && Object.keys(database).length > 0 && (
+          <Panel className="p-4 text-center border-[#D4FF3F]/40">
+            <p className="text-[#D4FF3F] font-bold text-sm">🎉 Rosa completa su tutti i reparti!</p>
+          </Panel>
+        )}
+
+        {/* ROSA */}
+        {showRosaPopup && (
+          <Panel className="p-5">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-sm font-display font-extrabold uppercase tracking-wide">💰 Rosa ({acquisti.length}/{slotTotali})</h2>
+              <div className="text-xs font-bold mono">Residuo: <span style={{ color: budgetResiduo < 0 ? "#FF4D6D" : "#34D399" }}>{Math.round(budgetResiduo)} cr</span></div>
+            </div>
+            {acquisti.length === 0 ? (
+              <p className="text-[#565D68] text-center py-6 text-sm">Nessun giocatore ancora</p>
+            ) : (
+              <div className="space-y-3">
+                {RUOLI.map(ruolo => {
+                  const lista = acquisti.filter(a => a.ruolo === ruolo);
+                  if (lista.length === 0) return null;
+                  return (
+                    <div key={ruolo}>
+                      <p className="text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: RUOLO_ACCENT[ruolo] }}>{RUOLO_LABEL[ruolo]}</p>
+                      <div className="flex flex-wrap gap-2">
+                        {lista.map((a, i) => (
+                          <div key={i} className="bg-[#0F1216] border-l-4 rounded-md px-3 py-2 text-sm flex items-center gap-2" style={{ borderLeftColor: RUOLO_ACCENT[ruolo] }}>
+                            <div>
+                              <div className="font-bold text-white">{a.nome}</div>
+                              <div className="text-[10px] text-[#8B95A1]">{a.squadra}</div>
+                            </div>
+                            <input type="number" className="w-16 bg-[#14181D] border border-[#2A2F37] text-white rounded px-1 py-0.5 text-xs font-bold"
+                              placeholder={getFMVScalato(database[a.nome]?.fmv).toString()}
+                              value={prezziPagati[a.nome] || ""}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value);
+                                const np = {...prezziPagati};
+                                if (v > 0) np[a.nome] = v; else delete np[a.nome];
+                                setPrezziPagati(np);
+                              }} />
+                            <button onClick={() => rimuoviAcquisto(a.nome)} className="text-[#8B95A1] hover:text-[#FF4D6D]">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+        )}
+
+        {/* MODAL PREPARA — Listone, Calendario, Griglia, Configurazione: si fa una volta sola prima dell'asta */}
+        {showPreparaModal && (
+          <ModalShell title="⚙️ Prepara" onClose={() => setShowPreparaModal(false)} wide>
+            <div className="flex gap-2 mb-4 flex-wrap border-b border-[#2A2F37] pb-3">
+              {[
+                { id: "listone", label: "📊 Listone" },
+                { id: "calendario", label: "📅 Calendario" },
+                { id: "griglia", label: "📐 Griglia" },
+                { id: "config", label: "⚙️ Config" },
+              ].map(t => (
+                <button key={t.id} onClick={() => setPreparaTab(t.id)}
+                  className={`px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wide border ${preparaTab === t.id ? "bg-[#D4FF3F] text-black border-[#D4FF3F]" : "bg-transparent text-[#E8ECEF] border-[#2A2F37] hover:border-[#D4FF3F]"}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {preparaTab === "listone" && (
+              <>
+            {Object.keys(database).length > 0 && (
+              <div className="flex justify-between items-center mb-3 bg-[#0F1216] border border-[#2A2F37] rounded-md p-2">
+                <span className="text-xs text-[#8B95A1]">{Object.keys(database).length} giocatori caricati</span>
+                <button onClick={() => chiediConferma("Svuotare il listone? Rosa e Mercato Altri potrebbero fare riferimento a giocatori non più presenti finché non ricarichi.", () => setDatabase({}))}
+                  className="px-2 py-1 bg-[#FF4D6D]/10 text-[#FF4D6D] border border-[#FF4D6D]/40 rounded text-[10px] font-bold hover:bg-[#FF4D6D]/20">🗑️ Svuota listone</button>
+              </div>
+            )}
+            <p className="text-xs text-[#8B95A1] mb-2 uppercase tracking-wide font-bold">Opzione A · File Excel</p>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])}
+              className="w-full border-2 border-dashed border-[#2A2F37] rounded-md p-4 text-sm text-[#8B95A1] mb-4" />
+
+            <p className="text-xs text-[#8B95A1] mb-2 uppercase tracking-wide font-bold">Opzione B · Copia e incolla</p>
+            <p className="text-xs text-[#565D68] mb-2">Incolla da Excel con intestazione (R, Nome, Squadra, FVM — ordine libero, separatore TAB).</p>
+            <textarea value={listoneTesto} onChange={(e) => setListoneTesto(e.target.value)}
+              className="w-full bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 mono text-xs h-40 mb-2 placeholder-[#565D68]"
+              placeholder={"R\tNome\tSquadra\tFVM\nP\tCarnesecchi\tAtalanta\t78\nP\tMaignan\tMilan\t92"} />
+            <button onClick={handlePasteListone} disabled={!listoneTesto.trim()}
+              className={`w-full px-4 py-2 rounded-md font-bold text-sm mb-2 ${!listoneTesto.trim() ? "bg-[#2A2F37] text-[#565D68] cursor-not-allowed" : "bg-[#D4FF3F] text-black hover:brightness-95"}`}>
+              ✅ Importa testo incollato
+            </button>
+
+            {importStatus && (
+              <div className={`mt-2 rounded-md p-3 text-center font-bold text-sm ${importStatus.includes('✅') ? "text-[#34D399] bg-[#34D399]/10" : importStatus.includes('⏳') ? "text-[#38BDF8] bg-[#38BDF8]/10" : "text-[#FF4D6D] bg-[#FF4D6D]/10"}`}>
+                {importStatus}
+              </div>
+            )}
+
+            {squadreDisponibili.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">🔍 Squadre riconosciute ({squadreDisponibili.length}) — controlla che non ci siano doppioni tipo "Milan" e "AC Milan"</p>
+                <div className="grid sm:grid-cols-2 gap-1 max-h-48 overflow-y-auto">
+                  {squadreDisponibili.map(sq => {
+                    const c = diagnosticoSquadre[sq] || { P: 0, D: 0, C: 0, A: 0 };
+                    const pochiPortieri = c.P <= 1;
+                    return (
+                      <div key={sq} className={`flex justify-between items-center text-xs px-2 py-1 rounded ${pochiPortieri ? "bg-[#FBBF24]/10" : "bg-[#0F1216]"}`}>
+                        <span className="text-white font-semibold">{sq}</span>
+                        <span className="text-[#8B95A1] mono">P{c.P} D{c.D} C{c.C} A{c.A}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-[#565D68] mt-1">Evidenziate in giallo le squadre con 0-1 portieri nel listone — se ne aspetti 2-3, potrebbe essere un doppione (es. Terracciano finito sotto "AC Milan" invece che "Milan").</p>
+              </div>
+            )}
+              </>
+            )}
+
+            {preparaTab === "calendario" && (
+              <>
+            {squadreDisponibili.length === 0 ? (
+              <Panel className="p-4 text-center border-[#FF4D6D]/40">
+                <p className="text-[#FF4D6D] font-bold text-sm">⚠️ Carica prima il listone — mi serve per riconoscere i nomi delle squadre</p>
+              </Panel>
+            ) : (
+              <>
+                <Panel className="p-4 mb-4 !bg-[#0F1216]">
+                  <div className="flex justify-between items-center mb-2 gap-2 flex-wrap">
+                    <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide">1 · Forza squadre (1-10, una volta sola)</p>
+                    <div className="flex gap-2">
+                      <button onClick={stimaForzaDaFMV} className="px-2 py-1 bg-[#D4FF3F] text-black rounded text-[10px] font-bold hover:brightness-95">📊 Stima automatica da FMV</button>
+                      <button onClick={() => chiediConferma("Reimpostare tutte le forze a 3/3/3?", () => setForzaSquadre({}))}
+                        className="px-2 py-1 bg-[#FF4D6D]/10 text-[#FF4D6D] border border-[#FF4D6D]/40 rounded text-[10px] font-bold hover:bg-[#FF4D6D]/20">🗑️ Svuota</button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-[#565D68] mb-2">La stima pesa i migliori 5 difensori, 5 centrocampisti, 4 attaccanti per FMV dando più peso a chi è più forte (1° e 2° contano di più del 4°-5°) — così una stella isolata in una piccola conta, e più stelle vere in una big si sommano invece di essere diluite dai rincalzi (i portieri non entrano in questo calcolo). Poi puoi correggere a mano.</p>
+                  <div className="grid sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto">
+                    {squadreDisponibili.map(sq => {
+                      const fs = forzaSquadre[sq] || { attacco: 5, centrocampo: 5, difesa: 5 };
+                      return (
+                        <div key={sq} className="flex items-center gap-2 bg-[#14181D] rounded-md p-2 border border-[#2A2F37]">
+                          <span className="text-sm font-semibold flex-1 truncate text-white">{sq}</span>
+                          {["attacco","centrocampo","difesa"].map(campo => (
+                            <div key={campo} className="flex flex-col items-center">
+                              <span className="text-[9px] text-[#565D68]">{campo.slice(0,3).toUpperCase()}</span>
+                              <input type="number" min="1" max="10" value={fs[campo]}
+                                onChange={(e) => setForzaCampo(sq, campo, e.target.value)}
+                                className="w-10 bg-[#0F1216] border border-[#2A2F37] text-white rounded text-center text-xs font-bold" />
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Panel>
+
+                <Panel className="p-4 mb-4 !bg-[#0F1216]">
+                  <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">2 · Incolla il calendario</p>
+                  <p className="text-xs text-[#565D68] mb-2">Supporto vari formati: (1) "1 - Atalanta - Cagliari" su una riga, (2) blocchi con intestazione "1^ GIORNATA – 24 AGOSTO 2025" o "Giornata 1 – 23/08/2026" seguita dalle partite una per riga "Atalanta-Sassuolo", (3) CSV tipo "1^ GIORNATA - 24 AGOSTO 2025,24/08/2025,Atalanta,Pisa,Atalanta vs. Pisa". Riconosco i nomi dal listone.</p>
+                  <textarea value={calendarioTesto} onChange={(e) => setCalendarioTesto(e.target.value)}
+                    className="w-full bg-[#14181D] border border-[#2A2F37] text-white rounded-md p-2 mono text-xs h-40 mb-2 placeholder-[#565D68]"
+                    placeholder={"1^ GIORNATA – 24 AGOSTO 2025\nAtalanta-Pisa\nCagliari-Fiorentina\n\n2^ GIORNATA – 31 AGOSTO 2025\nBologna-Como\n..."} />
+                  {calendarioStatus && (
+                    <div className={`rounded-md p-2 text-center text-xs font-bold mb-2 ${calendarioStatus.includes('✅') ? "text-[#34D399] bg-[#34D399]/10" : "text-[#FF4D6D] bg-[#FF4D6D]/10"}`}>{calendarioStatus}</div>
+                  )}
+                  <div className="flex gap-2">
+                    <button onClick={importaCalendario} className="flex-1 px-4 py-2 bg-[#D4FF3F] text-black rounded-md font-bold text-sm hover:brightness-95">✅ Importa ({calendario.length} già caricate)</button>
+                    {calendario.length > 0 && <button onClick={() => setCalendario([])} className="px-4 py-2 bg-[#2A2F37] text-[#E8ECEF] rounded-md font-semibold text-sm hover:brightness-110">Svuota</button>}
+                  </div>
+                  {copertura && (
+                    <div className="mt-3 text-xs">
+                      <p className="text-[#8B95A1]">📊 {copertura.totale} partite caricate · giornate {copertura.min}-{copertura.max}</p>
+                      {copertura.incomplete.length > 0 ? (
+                        <div className="mt-1 text-[#FBBF24]">
+                          <p className="font-bold">⚠️ Squadre con calendario incompleto (rispetto a {copertura.max - copertura.min + 1} giornate attese):</p>
+                          <p className="text-[10px]">{copertura.incomplete.map(([sq, n]) => `${sq} (${n})`).join(", ")}</p>
+                        </div>
+                      ) : (
+                        <p className="text-[#34D399] mt-1">✅ Tutte le squadre hanno lo stesso numero di partite nel range caricato</p>
+                      )}
+                    </div>
+                  )}
+                </Panel>
+
+                <Panel className="p-4 !bg-[#0F1216]">
+                  <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">3 · Punto di partenza</p>
+                  <div className="flex gap-4 items-center flex-wrap">
+                    <label className="text-xs font-semibold text-[#8B95A1]">Giornata attuale
+                      <input type="number" min="1" max="38" value={giornataAttuale}
+                        onChange={(e) => setGiornataAttuale(parseInt(e.target.value) || 1)}
+                        className="w-16 ml-2 bg-[#14181D] border border-[#2A2F37] text-white rounded p-1 text-center font-bold" />
+                    </label>
+                    <label className="text-xs font-semibold text-[#8B95A1]">Finestra (prossime N)
+                      <input type="number" min="1" max="10" value={finestraGiornate}
+                        onChange={(e) => setFinestraGiornate(parseInt(e.target.value) || 5)}
+                        className="w-16 ml-2 bg-[#14181D] border border-[#2A2F37] text-white rounded p-1 text-center font-bold" />
+                    </label>
+                  </div>
+                  <p className="text-xs text-[#565D68] mt-2">Il coefficiente mostrato nei suggerimenti è la media delle prossime {finestraGiornate} giornate a partire dalla {giornataAttuale}ª.</p>
+                </Panel>
+              </>
+            )}
+              </>
+            )}
+
+            {preparaTab === "griglia" && (
+              <>
+            {calendario.length === 0 ? (
+              <Panel className="p-4 text-center border-[#FF4D6D]/40">
+                <p className="text-[#FF4D6D] font-bold text-sm">⚠️ Carica prima il calendario da 📅 Calendario</p>
+              </Panel>
+            ) : (
+              <>
+                <p className="text-xs text-[#8B95A1] mb-3">Punteggio puro di calendario — nessun FMV, nessun budget. Per ogni giornata prendo la squadra del gruppo con la partita più facile, e vedo quante volte va bene (facile), così così (media) o male (difficile).</p>
+                {copertura && <p className="text-[10px] text-[#565D68] mb-3">📊 {copertura.totale} partite caricate · giornate {copertura.min}-{copertura.max}{copertura.incomplete.length > 0 ? " · ⚠️ alcune squadre hanno meno partite delle altre (vedi 📅 Calendario)" : ""}</p>}
+
+                <div className="flex gap-2 mb-4 flex-wrap">
+                  {RUOLI.map(r => (
+                    <button key={r} onClick={() => setGrigliaReparto(r)}
+                      className={`px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wide border ${grigliaReparto === r ? "bg-[#D4FF3F] text-black border-[#D4FF3F]" : "bg-transparent text-[#E8ECEF] border-[#2A2F37]"}`}>
+                      {RUOLO_LABEL[r]}
+                    </button>
+                  ))}
+                </div>
+
+                {/* migliori abbinamenti */}
+                <div className="mb-4">
+                  <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">🏆 Migliori abbinamenti ({RUOLO_LABEL[grigliaReparto]}, giornate {grigliaGiornataMin}-{grigliaGiornataMax})</p>
+                  <div className="grid sm:grid-cols-3 gap-2">
+                    {grigliaTopAbbinamenti.top2 && (
+                      <Panel className="p-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-bold text-white">{grigliaTopAbbinamenti.top2.squadre.join(" + ")}</span>
+                          <span className="mono text-lg font-extrabold text-[#D4FF3F]">{grigliaTopAbbinamenti.top2.score}/100</span>
+                        </div>
+                        <p className="text-[10px] text-[#565D68]">migliore abbinamento a 2</p>
+                      </Panel>
+                    )}
+                    {grigliaReparto === "P" && grigliaTopAbbinamenti.top3 && (
+                      <Panel className="p-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-bold text-white">{grigliaTopAbbinamenti.top3.squadre.join(" + ")}</span>
+                          <span className="mono text-lg font-extrabold text-[#D4FF3F]">{grigliaTopAbbinamenti.top3.score}/100</span>
+                        </div>
+                        <p className="text-[10px] text-[#565D68]">migliore abbinamento a 3</p>
+                      </Panel>
+                    )}
+                    {grigliaTopAbbinamenti.topNaturale && (
+                      <Panel className="p-3 border-[#D4FF3F]/40">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-bold text-white">{grigliaTopAbbinamenti.topNaturale.squadre.join(" + ")}</span>
+                          <span className="mono text-lg font-extrabold text-[#D4FF3F]">{grigliaTopAbbinamenti.topNaturale.score}/100</span>
+                        </div>
+                        <p className="text-[10px] text-[#565D68]">migliore abbinamento a {grigliaMaxSelezione} (schierati insieme — il gruppo reale per {RUOLO_LABEL[grigliaReparto]})</p>
+                      </Panel>
+                    )}
+                  </div>
+                </div>
+
+                {/* selezione manuale + dettaglio */}
+                <Panel className="p-4 mb-4 !bg-[#0F1216]">
+                  <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">Confronta fino a {grigliaMaxSelezione} squadre</p>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {squadreDisponibili.map(sq => (
+                      <button key={sq} onClick={() => toggleGrigliaSquadra(sq)}
+                        className={`px-2 py-1 rounded-md text-xs font-bold border ${grigliaSquadreSelezionate.includes(sq) ? "bg-[#D4FF3F] text-black border-[#D4FF3F]" : "bg-transparent text-[#8B95A1] border-[#2A2F37]"}`}>
+                        {sq}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-4 items-center flex-wrap mb-3">
+                    <label className="text-xs font-semibold text-[#8B95A1]">Da giornata
+                      <input type="number" min="1" max="38" value={grigliaGiornataMin}
+                        onChange={(e) => setGrigliaGiornataMin(parseInt(e.target.value) || 1)}
+                        className="w-14 ml-2 bg-[#14181D] border border-[#2A2F37] text-white rounded p-1 text-center font-bold" />
+                    </label>
+                    <label className="text-xs font-semibold text-[#8B95A1]">A giornata
+                      <input type="number" min="1" max="38" value={grigliaGiornataMax}
+                        onChange={(e) => setGrigliaGiornataMax(parseInt(e.target.value) || 38)}
+                        className="w-14 ml-2 bg-[#14181D] border border-[#2A2F37] text-white rounded p-1 text-center font-bold" />
+                    </label>
+                  </div>
+
+                  {grigliaDettaglioSelezione && grigliaDettaglioSelezione.score !== null ? (
+                    <div>
+                      <div className="flex items-center gap-4 flex-wrap mb-3">
+                        <div className="text-3xl font-extrabold mono" style={{ color: grigliaDettaglioSelezione.score >= 85 ? "#D4FF3F" : grigliaDettaglioSelezione.score >= 65 ? "#38BDF8" : "#FF4D6D" }}>
+                          {grigliaDettaglioSelezione.score}<span className="text-sm text-[#565D68]">/100</span>
+                        </div>
+                        <div className="flex gap-3 text-xs">
+                          <span className="text-[#34D399] font-bold">{grigliaDettaglioSelezione.facili} facili</span>
+                          <span className="text-[#FBBF24] font-bold">{grigliaDettaglioSelezione.medie} medie</span>
+                          <span className="text-[#FF4D6D] font-bold">{grigliaDettaglioSelezione.difficili} difficili</span>
+                          <span className="text-[#8B95A1]">{grigliaDettaglioSelezione.casa} casa · {grigliaDettaglioSelezione.fuori} fuori</span>
+                        </div>
+                      </div>
+                      {grigliaStriscia && (
+                        <div className="overflow-x-auto">
+                          <p className="text-[10px] text-[#565D68] mb-1">📅 Striscia calendario — un quadratino per giornata (verde=facile, giallo=media, rosso=difficile, grigio=nessuna partita)</p>
+                          {grigliaStriscia.map((riga, i) => (
+                            <div key={i} className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] text-white font-bold w-20 shrink-0 truncate">{riga.squadra}</span>
+                              <div className="flex gap-[2px]">
+                                {riga.giornate.map((cella, j) => (
+                                  <div key={j} title={`G${cella.g}`}
+                                    className="w-3 h-3 rounded-sm shrink-0"
+                                    style={{ background: cella.raw === null ? "#2A2F37" : cella.raw >= 4 ? "#34D399" : cella.raw === 3 ? "#FBBF24" : "#FF4D6D" }} />
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#565D68]">Seleziona almeno 1 squadra sopra.</p>
+                  )}
+                </Panel>
+
+                {/* matrice completa — ha senso solo per il Portiere (rotazione a 2), non per reparti schierati insieme */}
+                {grigliaReparto === "P" && grigliaMatrice && (
+                  <div>
+                    <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">Matrice abbinamenti a 2 (Portiere)</p>
+                    <div className="overflow-x-auto">
+                      <table className="text-[10px] border-collapse">
+                        <thead>
+                          <tr>
+                            <th className="p-1"></th>
+                            {squadreDisponibili.map(sq => <th key={sq} className="p-1 text-[#565D68] font-normal whitespace-nowrap">{sq.slice(0,3)}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {squadreDisponibili.map(a => (
+                            <tr key={a}>
+                              <td className="p-1 text-[#8B95A1] font-bold whitespace-nowrap pr-2">{a}</td>
+                              {squadreDisponibili.map(b => {
+                                const v = grigliaMatrice[a][b];
+                                return (
+                                  <td key={b} className="p-1 text-center mono font-bold rounded"
+                                    style={{ color: v === null ? "#2A2F37" : v >= 85 ? "#D4FF3F" : v >= 65 ? "#38BDF8" : "#FF4D6D" }}>
+                                    {v === null ? "—" : v}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {grigliaReparto !== "P" && (
+                  <p className="text-xs text-[#565D68]">📐 La matrice a coppie non è mostrata per {RUOLO_LABEL[grigliaReparto]} perché questo reparto si schiera a {grigliaMaxSelezione} insieme, non a rotazione — usa la card "abbinamento a {grigliaMaxSelezione}" sopra o il confronto manuale.</p>
+                )}
+              </>
+            )}
+              </>
+            )}
+
+            {preparaTab === "config" && (
+              <>
+            <label className="block text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-1">Budget totale (crediti)</label>
+            <input type="number" value={budgetTotale} onChange={(e) => setBudgetTotale(parseInt(e.target.value) || 500)}
+              className="w-full bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 mb-4 font-bold" />
+            <label className="block text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-1">Numero partecipanti lega</label>
+            <select value={numeroPartecipanti} onChange={(e) => setNumeroPartecipanti(parseInt(e.target.value))}
+              className="w-full bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 mb-2 font-bold">
+              <option value={8}>8 (meno concorrenza)</option>
+              <option value={10}>10 (più concorrenza)</option>
+            </select>
+            <p className="text-xs text-[#565D68] mb-4">Usato per il "rischio disponibilità" dei suggerimenti.</p>
+            <label className="block text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-1">Tetto massimo spesa portieri (crediti totali, 3 portieri)</label>
+            <input type="number" value={budgetMaxPortieri} onChange={(e) => setBudgetMaxPortieri(parseInt(e.target.value) || 55)}
+              className="w-full bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 mb-2 font-bold" />
+            <p className="text-xs text-[#565D68]">Riferimento indicativo, non un tetto rigido: le combo che lo superano restano visibili, segnalate con quanto sforano — decidi tu se vale la pena spingersi oltre.</p>
+
+            <label className="block text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-1 mt-4">Squadre per combo (titolari schierati)</label>
+            <div className="flex gap-3">
+              {["D", "C", "A"].map(r => (
+                <label key={r} className="flex-1 text-xs font-semibold text-[#8B95A1]">
+                  {RUOLO_LABEL[r]}
+                  <input type="number" min="2" max="6" value={gruppoDimReparto[r]}
+                    onChange={(e) => setGruppoDimReparto({ ...gruppoDimReparto, [r]: Math.max(2, parseInt(e.target.value) || 3) })}
+                    className="w-full mt-1 bg-[#0F1216] border border-[#2A2F37] text-white rounded p-2 text-center font-bold" />
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-[#565D68] mt-1">Quante squadre considerare insieme per reparto (es. Difesa 4 se schieri sempre 4 difensori).</p>
+
+            <label className="block text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-1 mt-4">Quanto il portiere dipende dal voto difesa ({pesoPortiereDifesa}%)</label>
+            <input type="range" min="0" max="100" step="10" value={pesoPortiereDifesa}
+              onChange={(e) => setPesoPortiereDifesa(parseInt(e.target.value))}
+              className="w-full accent-[#D4FF3F]" />
+            <p className="text-xs text-[#565D68] mt-1">100% = il portiere segue in pieno il voto Difesa della sua squadra (default). Valori più bassi ammorbidiscono il legame verso un calcolo più neutro.</p>
+                <div className="mt-4 pt-4 border-t border-[#2A2F37]">
+                  <button onClick={() => chiediConferma("Reset totale? Cancella listone, rosa, mercato altri, forza squadre e calendario.", () => { setDatabase({}); setAcquisti([]); setPrezziPagati({}); setForzaSquadre({}); setCalendario([]); setAltriAcquisti([]); })}
+                    className="w-full px-4 py-2 rounded-md text-xs font-bold border border-[#FF4D6D]/50 text-[#FF4D6D] hover:bg-[#FF4D6D]/10">🗑️ Reset totale (listone, rosa, mercato, calendario, forza squadre)</button>
+                </div>
+              </>
+            )}
+          </ModalShell>
+        )}
+
+
+        {/* MODAL MERCATO ALTRI */}
+        {showMercatoModal && (
+          <ModalShell title="🕵️ Mercato Altri" onClose={() => setShowMercatoModal(false)} wide>
+            <p className="text-xs text-[#8B95A1] mb-3">Segna i giocatori presi da altri con il prezzo pagato e la squadra avversaria: escono dai tuoi suggerimenti e correggono le stime insieme ai prezzi che paghi tu stesso in Rosa (mercato {correzioneMercato !== 1 ? (correzioneMercato > 1 ? "più caro" : "più economico") : "in linea"} del {Math.round(Math.abs(correzioneMercato-1)*100)}% rispetto al listone).</p>
+
+            <Panel className="p-3 mb-3 !bg-[#0F1216]">
+              <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">Nomi delle {squadreAvversarie.length} squadre avversarie</p>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {squadreAvversarie.map((nome, idx) => (
+                  <input key={idx} type="text" value={nome} onChange={(e) => rinominaSquadraAvversaria(idx, e.target.value)}
+                    className="bg-[#14181D] border border-[#2A2F37] text-white rounded-md p-2 text-sm" />
+                ))}
+              </div>
+              <p className="text-[10px] text-[#565D68] mt-2">Il numero si adegua automaticamente ai partecipanti impostati in ⚙️ Configurazione.</p>
+            </Panel>
+
+            <div className="relative mb-3">
+              <div className="flex gap-2 flex-wrap">
+                <input type="text" placeholder="Nome giocatore..." value={mercatoNomeInput}
+                  onChange={(e) => setMercatoNomeInput(e.target.value)}
+                  className="flex-1 min-w-[140px] bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 text-sm placeholder-[#565D68]" />
+                <input type="number" placeholder="Prezzo" value={mercatoPrezzoInput}
+                  onChange={(e) => setMercatoPrezzoInput(e.target.value)}
+                  className="w-24 bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 text-sm placeholder-[#565D68]" />
+                <select value={mercatoSquadraInput} onChange={(e) => setMercatoSquadraInput(e.target.value)}
+                  className="flex-1 min-w-[140px] bg-[#0F1216] border border-[#2A2F37] text-white rounded-md p-2 text-sm">
+                  <option value="">Squadra avversaria...</option>
+                  {squadreAvversarie.map((nome, idx) => <option key={idx} value={nome}>{nome}</option>)}
+                </select>
+                <button onClick={aggiungiAltroAcquisto} className="px-3 py-2 bg-[#D4FF3F] text-black rounded-md font-bold text-sm hover:brightness-95">➕</button>
+              </div>
+              {mercatoAutocomplete.length > 0 && (
+                <div className="absolute top-full left-0 right-0 bg-[#14181D] border border-[#D4FF3F]/40 rounded-md mt-1 shadow-xl z-10 max-h-48 overflow-y-auto">
+                  {mercatoAutocomplete.map((n, i) => (
+                    <div key={i} onClick={() => { setMercatoNomeInput(n); setMercatoAutocomplete([]); }} className="p-2 hover:bg-white/5 cursor-pointer text-sm font-semibold text-white">{n} <span className="text-xs text-[#565D68]">({database[n].squadra})</span></div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {Object.keys(riepilogoAvversari).length > 0 && (
+              <Panel className="p-3 mb-3 !bg-[#0F1216]">
+                <p className="text-xs font-bold text-[#8B95A1] uppercase tracking-wide mb-2">Riepilogo per avversario</p>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {Object.entries(riepilogoAvversari).map(([nomeAvv, dati]) => (
+                    <div key={nomeAvv} className="border border-[#2A2F37] rounded-md p-2">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-sm font-bold text-white">{nomeAvv}</span>
+                        <span className="text-xs mono text-[#8B95A1]">speso {dati.speso} cr</span>
+                      </div>
+                      <p className="text-[10px] text-[#565D68]">stima budget rimanente: <span className="font-bold" style={{ color: (budgetTotale - dati.speso) < budgetTotale * 0.15 ? "#FF4D6D" : "#34D399" }}>{budgetTotale - dati.speso} cr</span></p>
+                      <p className="text-[10px] text-[#565D68] mt-1">P {dati.perRuolo.P} · D {dati.perRuolo.D} · C {dati.perRuolo.C} · A {dati.perRuolo.A}</p>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            )}
+
+            <div className="space-y-1 max-h-64 overflow-y-auto">
+              {altriAcquisti.length === 0 ? (
+                <p className="text-[#565D68] text-center py-6 text-sm">Nessun acquisto registrato</p>
+              ) : altriAcquisti.map(a => (
+                <div key={a.id} className="flex justify-between items-center bg-[#0F1216] border border-[#2A2F37] rounded-md px-3 py-2">
+                  <div>
+                    <span className="text-sm font-semibold text-white">{a.nome}</span>
+                    {a.squadraAvv && <span className="text-xs text-[#8B95A1] ml-2">→ {a.squadraAvv}</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold mono text-[#8B95A1]">{a.prezzo} cr</span>
+                    <button onClick={() => rimuoviAltroAcquisto(a.id)} className="text-[#FF4D6D] hover:brightness-125 font-bold">✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ModalShell>
+        )}
+
+        {confermaPending && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4">
+            <div className="bg-[#14181D] border border-[#FF4D6D]/50 rounded-xl shadow-2xl max-w-sm w-full p-5">
+              <p className="text-sm text-[#E8ECEF] mb-4">{confermaPending.messaggio}</p>
+              <div className="flex gap-2">
+                <button onClick={() => { confermaPending.azione(); setConfermaPending(null); }}
+                  className="flex-1 px-4 py-2 bg-[#FF4D6D] text-white rounded-md font-bold text-sm hover:brightness-95">Conferma</button>
+                <button onClick={() => setConfermaPending(null)}
+                  className="flex-1 px-4 py-2 bg-[#2A2F37] text-[#E8ECEF] rounded-md font-semibold text-sm hover:brightness-110">Annulla</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
