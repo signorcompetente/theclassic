@@ -728,6 +728,23 @@ function App() {
     return max;
   };
 
+  // benchmark realistico per il punteggio combo: media dei migliori N giocatori del ruolo,
+  // dove N = quanti slot "buoni" esistono davvero nella lega (partecipanti × dimensione gruppo).
+  // Il vecchio calcolo confrontava la tua difesa contro IL miglior difensore assoluto della Serie A
+  // (es. Dimarco) moltiplicato per 4 — un bersaglio quasi irraggiungibile che faceva sembrare
+  // scarsa anche una rosa solida. Qui il 100/100 rappresenta "una buona rosa raggiungibile",
+  // non "la rosa perfetta impossibile".
+  const baselineFmvReparto = (ruolo, count) => {
+    const squadreValide = new Set(squadreDisponibili);
+    const valori = Object.values(database)
+      .filter(e => e.ruolo === ruolo && (squadreValide.size === 0 || squadreValide.has(e.squadra)))
+      .map(e => e.fmv)
+      .sort((a, b) => b - a)
+      .slice(0, Math.max(1, count));
+    if (valori.length === 0) return 1;
+    return valori.reduce((s, v) => s + v, 0) / valori.length;
+  };
+
   // ---- FIX: queste due funzioni erano andate perse in un patch precedente e causavano
   // "ReferenceError: fisseGlobali is not defined" (schermo nero). Rieccole al loro posto.
   const fisseGlobali = (ruolo) => [...new Set(acquisti.filter(a => a.ruolo === ruolo).map(a => a.squadra))];
@@ -770,7 +787,7 @@ function App() {
       costoMancanti += prezzoStimato; slotMancanti++;
       return { squadra: sq, giocatore: g, calScore, fattoreCal, valore, prezzoStimato, giaInRosa, penalitaDiversificazione, prezzoReale: false };
     });
-    const score = Math.round(Math.min(100, (somma / (maxFmv * 1.67 * gruppo.length)) * 100));
+    const score = Math.round(Math.min(100, (somma / (maxFmv * gruppo.length)) * 100));
     const fuoriBudget = costoMancanti > budgetResiduo;
     const quotaEqua = budgetMedioSlot * slotMancanti;
     const rapportoSostenibilita = quotaEqua > 0 ? costoMancanti / quotaEqua : 1;
@@ -935,11 +952,20 @@ function App() {
       Object.values(database).some(e => e.ruolo === ruolo && e.squadra === sq)
     );
     const fisse = [...new Set(acquisti.filter(a => a.ruolo === ruolo).map(a => a.squadra))];
-    const maxFmv = maxFmvReparto(ruolo);
+    const maxFmv = baselineFmvReparto(ruolo, numeroPartecipanti * GRUPPO_DIM);
 
     if (fisse.length >= GRUPPO_DIM) {
-      const gruppo = fisse.slice(0, GRUPPO_DIM);
-      return { ruolo, fisse, completo: true, top: [valutaGruppo(gruppo, ruolo, maxFmv)] };
+      // scegli le GRUPPO_DIM squadre migliori per FMV del giocatore REALMENTE posseduto,
+      // non le prime comprate in ordine cronologico: se il 5° acquisto vale più del 4° titolare,
+      // deve prendere il suo posto nel gruppo mostrato
+      const fisseOrdinate = [...fisse].sort((a, b) => {
+        const va = giocatoreProprioSquadra(a, ruolo)?.fmv || 0;
+        const vb = giocatoreProprioSquadra(b, ruolo)?.fmv || 0;
+        return vb - va;
+      });
+      const gruppo = fisseOrdinate.slice(0, GRUPPO_DIM);
+      const panchina = fisseOrdinate.slice(GRUPPO_DIM);
+      return { ruolo, fisse, completo: true, top: [valutaGruppo(gruppo, ruolo, maxFmv)], panchina };
     }
     const restanti = squadreConGiocatori.filter(sq => !fisse.includes(sq));
     const daAggiungere = GRUPPO_DIM - fisse.length;
@@ -1225,7 +1251,10 @@ function App() {
             )}
             {comboReparto.completo && (
               <Panel className="p-3 border-[#38BDF8]/40">
-                <p className="text-xs text-[#38BDF8] font-bold">Hai già 3+ squadre diverse in questo reparto — punteggio del trio attuale qui sotto.</p>
+                <p className="text-xs text-[#38BDF8] font-bold">Hai già {comboReparto.fisse.length} squadre diverse in questo reparto — sotto il gruppo migliore per valore reale ({GRUPPO_DIM} titolari).</p>
+                {comboReparto.panchina && comboReparto.panchina.length > 0 && (
+                  <p className="text-[10px] text-[#8B95A1] mt-1">In panchina (fuori dal gruppo titolare mostrato): <span className="text-[#565D68]">{comboReparto.panchina.join(", ")}</span></p>
+                )}
               </Panel>
             )}
             <div className="space-y-2">
