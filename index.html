@@ -830,8 +830,21 @@ function App() {
       const lista = (perBigTeam[b.squadra] || []).slice().sort((x, y) => y.score - x.score);
       return { squadra: b.squadra, combos: lista.slice(0, 3), bestScore: lista.length ? lista[0].score : null };
     });
-    let topBigJolly = migliorPerBigTeam.flatMap(g => g.combos);
-    const elencoBig = big.map(b => b.squadra);
+    const squadraTitolare = presi.length > 0 ? presi[0].squadra : null;
+    let comboPropriaSquadra = null;
+    if (squadraTitolare) {
+      const listaJolly = piccole
+        .filter(p => p.squadra !== squadraTitolare)
+        .map(p => {
+          const cal = valutaGruppoCalendario([squadraTitolare, p.squadra], "P", gMin, gMax);
+          if (cal.score === null || cal.score < SCORE_MINIMO) return null;
+          return { squadre: [squadraTitolare, p.squadra], lista: [p], costo: p.prezzoStimato, scarto: scartoTetto(p.prezzoStimato), ...cal };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 6);
+      comboPropriaSquadra = { squadra: squadraTitolare, combos: listaJolly };
+    }
 
     // diagnostico per squadra: ora il budget non esclude più nessuno, quindi le uniche vere esclusioni sono
     // titolare mancante/preso, oppure nessun abbinamento sopra la soglia minima di punteggio calendario
@@ -879,7 +892,7 @@ function App() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
 
-    const strategie = { topBigJolly, migliorPerBigTeam, elencoBig, diagnosticoPortieri, bloccoStessaSquadra, trisPiccole, tettoResiduo };
+    const strategie = { topBigJolly, migliorPerBigTeam, elencoBig, comboPropriaSquadra, diagnosticoPortieri, bloccoStessaSquadra, trisPiccole, tettoResiduo };
 
     if (presi.length === 0) {
       const top = [...soloTitolari]
@@ -1110,13 +1123,11 @@ function App() {
                   </div>
                 </details>
                 {(() => {
-                  const bigGiaPresa = motorePortieri.presi.find(p => motorePortieri.strategie.elencoBig.includes(p.squadra));
-                  const gruppiMostrati = bigGiaPresa
-                    ? motorePortieri.strategie.migliorPerBigTeam.filter(g => g.squadra === bigGiaPresa.squadra)
-                    : motorePortieri.strategie.migliorPerBigTeam;
+                  const propria = motorePortieri.strategie.comboPropriaSquadra;
+                  const gruppiMostrati = propria ? [propria] : motorePortieri.strategie.migliorPerBigTeam;
                   return (
                     <>
-                      {bigGiaPresa && <p className="text-[10px] text-[#D4FF3F] font-bold mb-1">✅ Hai già {bigGiaPresa.nome} ({bigGiaPresa.squadra}) — ecco solo i suoi jolly migliori</p>}
+                      {propria && <p className="text-[10px] text-[#D4FF3F] font-bold mb-1">✅ Hai già {motorePortieri.presi[0].nome} ({propria.squadra}) — ecco solo i suoi jolly migliori</p>}
                       {gruppiMostrati.length === 0 && <p className="text-xs text-[#565D68]">Nessuna combo disponibile</p>}
                       <div className="space-y-1.5">
                         {gruppiMostrati.map((gruppo, gi) => (
