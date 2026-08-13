@@ -728,6 +728,11 @@ function App() {
     return max;
   };
 
+  // ---- FIX: queste due funzioni erano andate perse in un patch precedente e causavano
+  // "ReferenceError: fisseGlobali is not defined" (schermo nero). Rieccole al loro posto.
+  const fisseGlobali = (ruolo) => [...new Set(acquisti.filter(a => a.ruolo === ruolo).map(a => a.squadra))];
+  const conteggioSquadraTotale = (squadra) => acquisti.filter(a => a.squadra === squadra).length;
+
   const giocatoreProprioSquadra = (squadra, ruolo) => {
     const acquisto = acquisti.find(a => a.squadra === squadra && a.ruolo === ruolo);
     if (!acquisto) return null;
