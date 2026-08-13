@@ -728,8 +728,13 @@ function App() {
     return max;
   };
 
-  const fisseGlobali = (ruolo) => [...new Set(acquisti.filter(a => a.ruolo === ruolo).map(a => a.squadra))];
-  const conteggioSquadraTotale = (squadra) => acquisti.filter(a => a.squadra === squadra).length;
+  const giocatoreProprioSquadra = (squadra, ruolo) => {
+    const acquisto = acquisti.find(a => a.squadra === squadra && a.ruolo === ruolo);
+    if (!acquisto) return null;
+    const fmv = database[acquisto.nome]?.fmv || 0;
+    const prezzoPagato = prezziPagati[acquisto.nome] || getFMVScalato(fmv) || 0;
+    return { nome: acquisto.nome, fmv, prezzoPagato };
+  };
   const SOGLIA_DIVERSIFICAZIONE = 3; // oltre questa soglia di giocatori già presi dalla stessa squadra (in tutta la rosa) scatta la penalità
   const PESO_DIVERSIFICAZIONE = 0.15; // -15% di valore per ogni giocatore oltre soglia, fino a un tetto
 
@@ -738,23 +743,30 @@ function App() {
     let costoMancanti = 0;
     let slotMancanti = 0;
     const dettaglio = gruppo.map(sq => {
-      const g = migliorDisponibile(sq, ruolo);
+      const gia = fisseGlobali(ruolo).includes(sq);
       const calScore = coefficienteCalendario(sq, ruolo);
       const fattoreCal = calScore !== null ? calScore / 3 : 1;
-      const gia = fisseGlobali(ruolo).includes(sq);
+
+      if (gia) {
+        // squadra già presente in rosa in questo reparto: uso il giocatore REALMENTE comprato,
+        // non il migliore ancora libero sul mercato — un colpo scarso pesa davvero sul punteggio
+        const posseduto = giocatoreProprioSquadra(sq, ruolo);
+        const valore = (posseduto ? posseduto.fmv : 0) * fattoreCal;
+        somma += valore;
+        return { squadra: sq, giocatore: posseduto, calScore, fattoreCal, valore, prezzoStimato: posseduto ? posseduto.prezzoPagato : 0, giaInRosa: 0, penalitaDiversificazione: 0, prezzoReale: true };
+      }
+
+      const g = migliorDisponibile(sq, ruolo);
       const giaInRosa = conteggioSquadraTotale(sq);
-      const penalitaDiversificazione = gia ? 0 : Math.min(0.6, Math.max(0, giaInRosa - SOGLIA_DIVERSIFICAZIONE) * PESO_DIVERSIFICAZIONE);
+      const penalitaDiversificazione = Math.min(0.6, Math.max(0, giaInRosa - SOGLIA_DIVERSIFICAZIONE) * PESO_DIVERSIFICAZIONE);
       const valore = (g ? g.fmv : 0) * fattoreCal * (1 - penalitaDiversificazione);
       somma += valore;
       const prezzoStimato = g ? getFMVScalato(g.fmv) : 0;
-      if (!gia) { costoMancanti += prezzoStimato; slotMancanti++; }
-      return { squadra: sq, giocatore: g, calScore, fattoreCal, valore, prezzoStimato, giaInRosa, penalitaDiversificazione };
+      costoMancanti += prezzoStimato; slotMancanti++;
+      return { squadra: sq, giocatore: g, calScore, fattoreCal, valore, prezzoStimato, giaInRosa, penalitaDiversificazione, prezzoReale: false };
     });
     const score = Math.round(Math.min(100, (somma / (maxFmv * 1.67 * gruppo.length)) * 100));
     const fuoriBudget = costoMancanti > budgetResiduo;
-    // sostenibilità reale: confronto con la "quota equa" di budget per quegli slot, viste TUTTE le altre cose
-    // che devi ancora comprare — non basta stare dentro il residuo totale, un colpo può comunque essere
-    // sproporzionato rispetto a quanto dovresti spendere lì in media (es. 3 top a centrocampo)
     const quotaEqua = budgetMedioSlot * slotMancanti;
     const rapportoSostenibilita = quotaEqua > 0 ? costoMancanti / quotaEqua : 1;
     const sostenibilita = rapportoSostenibilita > 2.5 ? "molto impegnativo" : rapportoSostenibilita > 1.5 ? "impegnativo" : "sostenibile";
@@ -929,7 +941,7 @@ function App() {
     const combos = combinazioni(restanti, daAggiungere)
       .map(extra => valutaGruppo([...fisse, ...extra], ruolo, maxFmv))
       .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
+      .slice(0, 1);
     return { ruolo, fisse, completo: false, top: combos };
   }, [repartoAttivo, squadreDisponibili, database, acquisti, nomiEsclusi, calendario, forzaSquadre, giornataAttuale, finestraGiornate, gruppoDimReparto, pesoPortiereDifesa]);
 
@@ -1242,7 +1254,7 @@ function App() {
                           {d.giocatore ? (
                             <>
                               <p className="font-bold text-sm text-white">{d.giocatore.nome}</p>
-                              <p className="text-xs mono text-[#C8D0D9]">~{getFMVScalato(d.giocatore.fmv)} cr</p>
+                              <p className="text-xs mono text-[#C8D0D9]">{d.prezzoReale ? "" : "~"}{d.prezzoStimato} cr</p>
                             </>
                           ) : (
                             <p className="text-xs text-[#FF4D6D] font-bold">nessun giocatore disponibile</p>
