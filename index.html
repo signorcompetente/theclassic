@@ -1109,30 +1109,41 @@ function App() {
                     ))}
                   </div>
                 </details>
-                {motorePortieri.strategie.migliorPerBigTeam.length === 0 && <p className="text-xs text-[#565D68]">Nessuna combo disponibile</p>}
-                <div className="space-y-1.5">
-                  {motorePortieri.strategie.migliorPerBigTeam.map((gruppo, gi) => (
-                    <div key={gi}>
-                      <p className="text-[10px] text-[#8B95A1] font-bold mb-0.5">{gruppo.squadra}</p>
-                      {gruppo.combos.length === 0 ? (
-                        <p className="text-[10px] text-[#565D68] mb-1">Nessun abbinamento sopra la soglia minima di punteggio in questa finestra di giornate.</p>
-                      ) : (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                          {gruppo.combos.map((combo, i) => (
-                            <Panel key={i} className="p-1.5">
-                              <div className="flex justify-between items-center">
-                                <span className="text-[11px] font-bold text-white leading-tight">{combo.squadre.join(" + ")}</span>
-                                <span className="mono text-xs font-extrabold shrink-0 ml-1" style={{ color: combo.score >= 75 ? "#D4FF3F" : combo.score >= 50 ? "#38BDF8" : "#FF4D6D" }}>{combo.score}</span>
+                {(() => {
+                  const bigGiaPresa = motorePortieri.presi.find(p => motorePortieri.strategie.elencoBig.includes(p.squadra));
+                  const gruppiMostrati = bigGiaPresa
+                    ? motorePortieri.strategie.migliorPerBigTeam.filter(g => g.squadra === bigGiaPresa.squadra)
+                    : motorePortieri.strategie.migliorPerBigTeam;
+                  return (
+                    <>
+                      {bigGiaPresa && <p className="text-[10px] text-[#D4FF3F] font-bold mb-1">✅ Hai già {bigGiaPresa.nome} ({bigGiaPresa.squadra}) — ecco solo i suoi jolly migliori</p>}
+                      {gruppiMostrati.length === 0 && <p className="text-xs text-[#565D68]">Nessuna combo disponibile</p>}
+                      <div className="space-y-1.5">
+                        {gruppiMostrati.map((gruppo, gi) => (
+                          <div key={gi}>
+                            <p className="text-[10px] text-[#8B95A1] font-bold mb-0.5">{gruppo.squadra}</p>
+                            {gruppo.combos.length === 0 ? (
+                              <p className="text-[10px] text-[#565D68] mb-1">Nessun abbinamento sopra la soglia minima di punteggio in questa finestra di giornate.</p>
+                            ) : (
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                                {gruppo.combos.map((combo, i) => (
+                                  <Panel key={i} className="p-1.5">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-[11px] font-bold text-white leading-tight">{combo.squadre.join(" + ")}</span>
+                                      <span className="mono text-xs font-extrabold shrink-0 ml-1" style={{ color: combo.score >= 75 ? "#D4FF3F" : combo.score >= 50 ? "#38BDF8" : "#FF4D6D" }}>{combo.score}</span>
+                                    </div>
+                                    <p className="text-[9px] text-[#8B95A1] leading-tight">{combo.lista.map(c => c.nome).join(" · ")} — ~{combo.costo}cr{combo.scarto > 0 && <span className="text-[#FBBF24]"> (+{combo.scarto})</span>}</p>
+                                    <p className="text-[9px] text-[#565D68]">{combo.facili}f·{combo.medie}m·{combo.difficili}d</p>
+                                  </Panel>
+                                ))}
                               </div>
-                              <p className="text-[9px] text-[#8B95A1] leading-tight">{combo.lista.map(c => c.nome).join(" · ")} — ~{combo.costo}cr{combo.scarto > 0 && <span className="text-[#FBBF24]"> (+{combo.scarto})</span>}</p>
-                              <p className="text-[9px] text-[#565D68]">{combo.facili}f·{combo.medie}m·{combo.difficili}d</p>
-                            </Panel>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
 
               <div>
