@@ -71,8 +71,8 @@ function findCol(headerRow, candidates) {
 }
 
 // ---------- componenti UI riutilizzabili (tema dark/terminal) ----------
-function Panel({ children, className = "" }) {
-  return <div className={`bg-[#14181D] border border-[#262B33] rounded-lg ${className}`}>{children}</div>;
+function Panel({ children, className = "", style = {} }) {
+  return <div className={`bg-[#14181D] border border-[#262B33] rounded-lg ${className}`} style={style}>{children}</div>;
 }
 function Pill({ children, color = "#D4FF3F", className = "" }) {
   return <span className={`inline-block text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded ${className}`}
@@ -1080,7 +1080,7 @@ function App() {
                 <Panel className="p-2 col-span-2 sm:col-span-5"><p className="text-xs text-[#FF4D6D] font-bold">Nessun candidato trovato con questi criteri.</p></Panel>
               )}
               {motorePortieri.suggeriti.map((c, i) => (
-                <Panel key={i} className="p-2">
+                <Panel key={i} className="p-2" style={{ borderColor: RUOLO_ACCENT.P + "33", background: RUOLO_ACCENT.P + "0D" }}>
                   <div className="flex justify-between items-start">
                     <span className="font-bold text-xs text-white leading-tight">{c.nome}</span>
                     {i === 0 && <span className="text-[#D4FF3F] text-[10px] mono">#1</span>}
@@ -1189,7 +1189,7 @@ function App() {
             )}
             <div className="space-y-2">
               {comboReparto.top.map((combo, i) => (
-                <Panel key={i} className="p-4">
+                <Panel key={i} className="p-4" style={{ borderColor: RUOLO_ACCENT[comboReparto.ruolo] + "33" }}>
                   <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
                     <span className="font-bold text-white text-sm">{combo.gruppo.join(" + ")}</span>
                     <div className="flex items-center gap-2">
@@ -1213,7 +1213,7 @@ function App() {
                     {combo.dettaglio.map((d, j) => {
                       const gia = comboReparto.fisse.includes(d.squadra);
                       return (
-                        <div key={j} className="rounded-md border p-3" style={{ borderColor: gia ? "#D4FF3F55" : "#2A2F37", background: gia ? "#D4FF3F0D" : "#0F1216" }}>
+                        <div key={j} className="rounded-md border p-3" style={{ borderColor: gia ? "#D4FF3F55" : RUOLO_ACCENT[comboReparto.ruolo] + "55", background: gia ? "#D4FF3F0D" : RUOLO_ACCENT[comboReparto.ruolo] + "14" }}>
                           <p className="text-xs text-[#8B95A1] mb-1">{d.squadra} {gia && <span className="text-[#D4FF3F]">✓ già in rosa</span>}</p>
                           {d.giocatore ? (
                             <>
