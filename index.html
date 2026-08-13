@@ -830,6 +830,8 @@ function App() {
       const lista = (perBigTeam[b.squadra] || []).slice().sort((x, y) => y.score - x.score);
       return { squadra: b.squadra, combos: lista.slice(0, 3), bestScore: lista.length ? lista[0].score : null };
     });
+    let topBigJolly = migliorPerBigTeam.flatMap(g => g.combos);
+    const elencoBig = big.map(b => b.squadra);
     const squadraTitolare = presi.length > 0 ? presi[0].squadra : null;
     let comboPropriaSquadra = null;
     if (squadraTitolare) {
